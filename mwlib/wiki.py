@@ -16,16 +16,20 @@ log = Log('mwlib.utils')
 def wiki_mwapi(
     base_url=None,
     template_blacklist=None,
+    template_exclusion_category=None,
     username=None,
     password=None,
     domain=None,
+    script_extension=None,
     **kwargs):
     from mwlib import mwapidb
     return mwapidb.WikiDB(base_url,
         template_blacklist=template_blacklist,
+        template_exclusion_category=template_exclusion_category,
         username=username,
         password=password,
         domain=domain,
+        script_extension=script_extension,
     )
 
 def wiki_zip(path=None, url=None, name=None, **kwargs):
@@ -70,6 +74,7 @@ def image_mwapi(
     username=None,
     password=None,
     domain=None,
+    script_extension=None,
     **kwargs
 ):
     from mwlib import mwapidb
@@ -77,6 +82,7 @@ def image_mwapi(
         username=username,
         password=password,
         domain=domain,
+        script_extension=script_extension,
     )
 
 def image_download(url=None, localpath=None, knownlicenses=None, **kwargs):
@@ -169,7 +175,7 @@ url=
                         wikitext = unicode(wikitext, 'utf-8')
                     except UnicodeError:
                         wikitext = None
-            elif license.get('mw_rights_text'):
+            else:
                 wikitext = ''
                 if license.get('mw_rights_text'):
                     wikitext = license['mw_rights_text']
@@ -189,7 +195,11 @@ url=
         return licenses
     
 
-def _makewiki(conf, metabook=None, username=None, password=None, domain=None):
+def _makewiki(conf,
+    metabook=None,
+    username=None, password=None, domain=None,
+    script_extension=None,
+):
     res = Environment(metabook)
     
     url = None
@@ -204,11 +214,13 @@ def _makewiki(conf, metabook=None, username=None, password=None, domain=None):
             username=username,
             password=password,
             domain=domain,
+            script_extension=script_extension,
         )
         res.images = image_mwapi(url,
             username=username,
             password=password,
             domain=domain,
+            script_extension=script_extension,
         )
         return res
     
@@ -251,11 +263,16 @@ def _makewiki(conf, metabook=None, username=None, password=None, domain=None):
     assert res.wiki is not None, '_makewiki should have set wiki attribute'
     return res
 
-def makewiki(conf, metabook=None, username=None, password=None, domain=None):
+def makewiki(conf,
+    metabook=None,
+    username=None, password=None, domain=None,
+    script_extension=None,
+):
     res = _makewiki(conf, metabook,
         username=username,
         password=password,
         domain=domain,
+        script_extension=script_extension,
     )
     res.wiki.env = res
     if res.images:

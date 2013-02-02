@@ -90,6 +90,8 @@ def buildzip():
     options, args = parser.parse_args()
     
     use_help = 'Use --help for usage information.'
+    if parser.metabook is None and options.collectionpage is None:
+        parser.error('Neither --metabook nor, --collectionpage or arguments specified.\n' + use_help)
     if options.posturl and options.getposturl:
         parser.error('Specify either --posturl or --getposturl.\n' + use_help)
     if not options.posturl and not options.getposturl and not options.output:
@@ -105,58 +107,47 @@ def buildzip():
     else:
         podclient = None
     
+    from mwlib import utils
+    
     if options.daemonize:
-        from mwlib.utils import daemonize
-        daemonize()
+        utils.daemonize()
     if options.pid_file:
         open(options.pid_file, 'wb').write('%d\n' % os.getpid())
-    
-    def set_status(status):
-        print 'Status: %s' % status
-        if podclient is not None:
-            podclient.post_status(status)
-        
-    def set_progress(progress):
-        print 'Progress: %d%%' % progress
-        if podclient is not None:
-            podclient.post_progress(int(progress))
-    
-    def set_current_article(title):
-        print 'Current Article: %r' % title
-        if podclient is not None:
-            podclient.post_current_article(title)
-    
+
+    filename = None
+    status = None
     try:
-        env = parser.makewiki()
+        try:
+            env = parser.makewiki()
         
-        from mwlib import recorddb
+            from mwlib.status import Status
+            from mwlib import zipcreator
         
-        set_status('parsing')
-        set_progress(0)
-        
-        filename = recorddb.make_zip_file(options.output, env,
-            set_progress=lambda p: set_progress(p*0.9),
-            set_current_article=set_current_article,
-            num_article_threads=options.num_article_threads,
-            num_image_threads=options.num_image_threads,
-            imagesize=options.imagesize,
-        )
-        
-        if podclient:
-            set_status('uploading')
-            podclient.post_zipfile(filename)
-        
-        if options.output is None:
-            try:
-                os.unlink(filename)
-            except Exception, e:
-                print 'Could not delete file %r: %s' % (filename, e)
-        
-        set_status('finished')
-        set_progress(100)
-    except Exception, e:
-        set_status('error')
-        raise
+            status = Status(podclient=podclient, progress_range=(1, 90))
+            status(status='parsing', progress=0)
+            
+            filename = zipcreator.make_zip_file(options.output, env,
+                status=status,
+                num_threads=options.num_threads,
+                imagesize=options.imagesize,
+            )
+            
+            status = Status(podclient=podclient, progress_range=(91, 100))
+            if podclient:
+                status(status='uploading', progress=0)
+                podclient.post_zipfile(filename)
+            
+            status(status='finished', progress=100)
+        except Exception, e:
+            if status:
+                status(status='error')
+            raise
+    finally:
+        if options.output is None and filename is not None:
+            print 'removing %r' % filename
+            utils.safe_unlink(filename)
+        if options.pid_file:
+            utils.safe_unlink(options.pid_file)
 
 def post():
     parser = optparse.OptionParser(usage="%prog OPTIONS")
@@ -192,6 +183,7 @@ def post():
         webbrowser.open(podclient.redirecturl)
     
     from mwlib import utils
+    from mwlib.status import Status
     
     if options.logfile:
         utils.start_logging(options.logfile)
@@ -201,27 +193,20 @@ def post():
     if options.pid_file:
         open(options.pid_file, 'wb').write('%d\n' % os.getpid())
     
-    def set_status(status):
-        print 'Status: %s' % status
-        podclient.post_status(status)
-        
-    def set_progress(progress):
-        print 'Progress: %d%%' % progress
-        podclient.post_progress(int(progress))
     
-    def set_current_article(title):
-        print 'Current Article: %r' % title
-        podclient.post_current_article(title)
+    status = Status(podclient=podclient)
     
     try:
-        set_progress(0)
-        set_status('uploading')
-        podclient.post_zipfile(options.input)
-        set_status('finished')
-        set_progress(100)
-    except Exception, e:
-        set_status('error')
-        raise
+        try:
+            status(status='uploading', progress=0)
+            podclient.post_zipfile(options.input)
+            status(status='finished', progress=100)
+        except Exception, e:
+            status(status='error')
+            raise
+    finally:
+        if options.pid_file:
+            utils.safe_unlink(options.pid_file)
 
 def render():
     from mwlib.options import OptionParser
@@ -248,6 +233,12 @@ def render():
         help='write ZIP file to FILENAME',
         metavar='FILENAME',
     )
+    parser.add_option('--keep-tmpfiles',                  
+                      action='store_true',
+                      default=False,
+                      help="don't remove  temporary files like images",
+                      )
+    
     options, args = parser.parse_args()
     
     import simplejson
@@ -257,7 +248,8 @@ def render():
     import pkg_resources
     from mwlib.mwapidb import MWAPIError
     from mwlib.writerbase import WriterError
-    from mwlib import recorddb, zipwiki
+    from mwlib import utils, zipwiki, zipcreator
+    from mwlib.status import Status
     
     use_help = 'Use --help for usage information.'
     
@@ -324,80 +316,71 @@ def render():
                 writer_options[wopt] = True
     
     if options.daemonize:
-        from mwlib.utils import daemonize
-        daemonize()
+        utils.daemonize()
     if options.pid_file:
         open(options.pid_file, 'wb').write('%d\n' % os.getpid())
     
-    last_status = {}
-    def set_status(status=None, progress=None, article=None, content_type=None, file_extension=None):
-        if status is not None:
-            last_status['status'] = status
-            print 'STATUS: %s' % status
-        if progress is not None:
-            assert 0 <= progress and progress <= 100, 'status not in range 0..100'
-            last_status['progress'] = progress
-            print 'PROGRESS: %d%%' % progress
-        if article is not None:
-            last_status['article'] = article
-            print 'ARTICLE: %r' % article
-        if content_type is not None:
-            last_status['content_type'] = content_type
-        if file_extension is not None:
-            last_status['file_extension'] = file_extension
-        if options.status_file:
-            open(options.status_file, 'wb').write(simplejson.dumps(last_status).encode('utf-8'))
+    status = Status(options.status_file, progress_range=(1, 70))
+    status(status='parsing', progress=0)
     
+    env = None
     try:
-        env = parser.makewiki()
+        try:
+            env = parser.makewiki()
         
-        set_status(status='parsing', progress=0)
-        
-        if not isinstance(env.wiki, zipwiki.Wiki)\
-            or not isinstance(env.images, zipwiki.ImageDB):
-            zip_filename = recorddb.make_zip_file(options.keep_zip, env,
-                set_progress=lambda p: set_status(progress=0.7*p),
-                set_current_article=lambda t: set_status(article=t),
-                num_article_threads=options.num_article_threads,
-                num_image_threads=options.num_image_threads,
-                imagesize=options.imagesize,
-            )
-            if env.images:
-                env.images.clear()
-            env.wiki = zipwiki.Wiki(zip_filename)
-            env.images = zipwiki.ImageDB(zip_filename)
-        else:
-            zip_filename = None
-        
-        fd, tmpout = tempfile.mkstemp(dir=os.path.dirname(options.output))
-        os.close(fd)
-        writer(env, output=tmpout, status_callback=set_status, **writer_options)
-        os.rename(tmpout, options.output)
-        kwargs = {}
-        if hasattr(writer, 'content_type'):
-            kwargs['content_type'] = writer.content_type
-        if hasattr(writer, 'file_extension'):
-            kwargs['file_extension'] = writer.file_extension
-        if env.images:
-            env.images.clear()
-        set_status(status='finished', progress=100, **kwargs)
-        if options.keep_zip is None and zip_filename is not None:
-            try:
-                os.unlink(zip_filename)
-            except Exception, e:
-                print 'Could not remove %r: %s' % (zip_filename, e)
-    except Exception, e:
-        set_status(status='error')
-        if options.error_file:
-            fd, tmpfile = tempfile.mkstemp(dir=os.path.dirname(options.error_file))
-            f = os.fdopen(fd, 'wb')
-            if isinstance(e, WriterError) or isinstance(e, MWAPIError):
-                f.write(str(e))
+            if not isinstance(env.wiki, zipwiki.Wiki)\
+                or not isinstance(env.images, zipwiki.ImageDB):
+                zip_filename = zipcreator.make_zip_file(options.keep_zip, env,
+                    status=status,
+                    num_threads=options.num_threads,
+                    imagesize=options.imagesize,
+                )
+                if env.images:
+                    env.images.clear()
+                env.wiki = zipwiki.Wiki(zip_filename)
+                env.images = zipwiki.ImageDB(zip_filename)
             else:
-                traceback.print_exc(file=f) 
-            f.close()
-            os.rename(tmpfile, options.error_file)
-        raise
+                zip_filename = None
+            
+            print 'START WITH PROGRESS'
+            status = Status(options.status_file, progress_range=(71, 100))
+            status(status='rendering', progress=0)
+            
+            fd, tmpout = tempfile.mkstemp(dir=os.path.dirname(options.output))
+            os.close(fd)
+            writer(env, output=tmpout, status_callback=status, **writer_options)
+            os.rename(tmpout, options.output)
+            kwargs = {}
+            if hasattr(writer, 'content_type'):
+                kwargs['content_type'] = writer.content_type
+            if hasattr(writer, 'file_extension'):
+                kwargs['file_extension'] = writer.file_extension
+            status(status='finished', progress=100, **kwargs)
+            if options.keep_zip is None and zip_filename is not None:
+                utils.safe_unlink(zip_filename)
+        except Exception, e:
+            status(status='error')
+            if options.error_file:
+                fd, tmpfile = tempfile.mkstemp(dir=os.path.dirname(options.error_file))
+                f = os.fdopen(fd, 'wb')
+                if isinstance(e, WriterError) or isinstance(e, MWAPIError):
+                    f.write(str(e))
+                else:
+                    traceback.print_exc(file=f) 
+                f.close()
+                os.rename(tmpfile, options.error_file)
+            raise
+    finally:
+        if env is not None and env.images is not None:
+            try:
+                if not options.keep_tmpfiles:
+                    env.images.clear()
+                else:
+                    pass
+            except Exception, e:
+                print 'ERROR: Could not remove temporary images: %s' % e
+        if options.pid_file:
+            utils.safe_unlink(options.pid_file)
 
 def parse():
     parser = optparse.OptionParser(usage="%prog [-a|--all] --config CONFIG [ARTICLE1 ...]")
@@ -481,8 +464,8 @@ def serve():
         help='write PID of daemonized process to this file',
     )
     parser.add_option('-P', '--protocol',
-        help='one of %s (default: fcgi)' % ', '.join(proto2server.keys()),
-        default='fcgi',
+        help='one of %s (default: http)' % ', '.join(proto2server.keys()),
+        default='http',
     )
     parser.add_option('-p', '--port',
         help='port to listen on (default: 8899)',
@@ -501,24 +484,24 @@ def serve():
         default='mw-render',
     )
     parser.add_option('--mwrender-logfile',
-        help='logfile for mw-render',
-        default='/var/log/mw-render.log',
+        help='global logfile for mw-render',
+        metavar='LOGFILE',
     )
     parser.add_option('--mwzip',
         help='(path to) mw-zip executable',
         default='mw-zip',
     )
     parser.add_option('--mwzip-logfile',
-        help='logfile for mw-zip',
-        default='/var/log/mw-zip.log',
+        help='global logfile for mw-zip',
+        metavar='LOGFILE',
     )
     parser.add_option('--mwpost',
         help='(path to) mw-post executable',
         default='mw-post',
     )
     parser.add_option('--mwpost-logfile',
-        help='logfile for mw-post',
-        default='/var/log/mw-post.log',
+        help='global logfile for mw-post',
+        metavar='LOGFILE',
     )
     parser.add_option('-q', '--queue-dir',
         help='queue dir of mw-watch (if not specified, no queue is used)',
@@ -651,6 +634,9 @@ def serve():
             **flup_kwargs
         ).run()
     
+    if options.pid_file:
+        utils.safe_unlink(options.pid_file)
+    
     log.info('exit.')
 
 def watch():
@@ -699,6 +685,9 @@ def watch():
         processing_dir=options.processing_dir,
         max_num_jobs=options.num_jobs,
     ).run_forever()
+    
+    if options.pid_file:
+        utils.safe_unlink(options.pid_file)
 
 def testserve():
     parser = optparse.OptionParser(usage="%prog --config CONFIG ARTICLE [...]")

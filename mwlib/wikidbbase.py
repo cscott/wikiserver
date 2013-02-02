@@ -1,14 +1,12 @@
 import urllib
 
-from mwlib import parser, uparser
+from mwlib import parser, uparser, utils
 from mwlib.log import Log
 
 log = Log('wikidbbase')
 
 class WikiDBBase(object):
     """Base class for WikiDBs"""
-    
-    interwikimap = None
     
     def getLinkURL(self, link, title, revision=None):
         """Get a full HTTP URL for the given link object, parsed from an article
@@ -48,7 +46,7 @@ class WikiDBBase(object):
             if my_url is None:
                 return None
             my_title = urllib.quote(title.replace(" ", "_").encode('utf-8'), safe=':/@')
-            link_title = urllib.quote(link.target.replace(" ", "_").encode('utf-8'), safe=':/@')
+            link_title = urllib.quote(link.full_target.replace(" ", "_").encode('utf-8'), safe=':/@')
             pos = my_url.find(my_title)
             if pos == -1:
                 return None
@@ -61,10 +59,11 @@ class WikiDBBase(object):
             prefix, target = link.full_target.split(':', 1)
             interwikimap = self.getInterwikiMap(title, revision=revision)
             if interwikimap and prefix in interwikimap:
-                return interwikimap[prefix]['url'].replace(
+                url = utils.get_safe_url(interwikimap[prefix]['url'].replace(
                     '$1',
                     urllib.quote(target.encode('utf-8'), safe='/:@'),
-                )
+                ))
+                return url
         
         log.warn('unhandled link in getLinkURL(): %s with (full)target %r' % (
             link.__class__.__name__, getattr(link, 'full_target', None) or link.target,

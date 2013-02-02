@@ -17,16 +17,10 @@ import urlparse
 
 import simplejson
 
-from mwlib import utils, metabook, wikidbbase
+from mwlib import utils, metabook, wikidbbase, uparser, parser
 from mwlib.log import Log
 
 log = Log("mwapidb")
-
-try:
-    from mwlib.licenses import lower2normal
-except ImportError:
-    log.warn('no licenses found')
-    lower2normal = {}
 
 # ==============================================================================
 
@@ -123,7 +117,7 @@ def parse_article_url(url, title_encoding='utf-8'):
     if api_helper is None:
         return None
 
-    for part in ('/wiki/', 'index.php/'):
+    for part in ('index.php/', '/wiki/'):
         if part in path:
             return {
                 'api_helper': api_helper,
@@ -153,12 +147,14 @@ class APIHelper(object):
     """
     long_request = 2
     
-    def __init__(self, base_url):
+    def __init__(self, base_url, script_extension=None):
         """
-        @param base_url: base URL (or list of URLs) of a MediaWiki,
-            i.e. URL path to php scripts,
+        @param base_url: base URL of a MediaWiki, i.e. URL path to php scripts,
             e.g. 'http://en.wikipedia.org/w/' for English Wikipedia.
-        @type base_url: basestring or [basestring]
+        @type base_url: basestring
+        
+        @param script_extension: script extension for PHP scripts
+        @type script_extension: basestring
         """
         
         if isinstance(base_url, unicode):
@@ -167,6 +163,14 @@ class APIHelper(object):
             self.base_url = base_url
         if self.base_url[-1] != '/':
             self.base_url += '/'
+        if not script_extension:
+            self.script_extension = '.php'
+        else:
+            self.script_extension = script_extension        
+        if isinstance(self.script_extension, unicode):
+            self.script_extension = self.script_extension.encode('utf-8')
+        if self.script_extension[0] != '.':
+            self.script_extension = '.' + self.script_extension
         self.query_cache = {}
         self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookielib.CookieJar()))
         self.opener.addheaders = [('User-agent', 'mwlib')]
@@ -201,7 +205,7 @@ class APIHelper(object):
         }
         if domain is not None:
             args['lgdomain'] = domain.encode('utf-8')
-        result = utils.fetch_url('%sapi.php' % self.base_url,
+        result = utils.fetch_url('%sapi%s' % (self.base_url, self.script_extension),
             post_data=args,
             ignore_errors=False,
             opener=self.opener,
@@ -223,35 +227,43 @@ class APIHelper(object):
         q = urllib.urlencode(args)
         q = q.replace('%3A', ':') # fix for wrong quoting of url for images
         q = q.replace('%7C', '|') # fix for wrong quoting of API queries (relevant for redirects)
-
+        
         for i in range(num_tries):
             try:
                 s = time.time()
-                data = utils.fetch_url('%sapi.php?%s' % (self.base_url, q),
+                data = utils.fetch_url('%sapi%s?%s' % (self.base_url, self.script_extension, q),
                     ignore_errors=ignore_errors,
                     opener=self.opener,
                 )
                 elapsed = time.time() - s
                 if elapsed > self.long_request:
                     log.warn('Long request: HTTP request took %f s' % elapsed)
+                if data is not None:
+                    break
             except:
                 if i == num_tries - 1:
                     raise
+            log.warn('Fetching failed. Trying again.')
             time.sleep(0.5)
         
         if ignore_errors and data is None:
-            log.error('Got no data from api.php')
+            log.error('Got no data from api%s' % self.script_extension)
             return None
         try:
-            return simplejson.loads(unicode(data, 'utf-8'))['query']
+            data = unicode(data, 'utf-8')
+            if data and data[0] == u'\ufeff': # strip off BOM
+                # Note that a BOM is actually *not allowed* at the beginning of a JSON string
+                # see http://www.ietf.org/rfc/rfc4627.txt, section "3. Encoding"
+                data = data[1:]
+            return simplejson.loads(data)['query']
         except KeyError:
-            log.error('Response from api.php did not contain a query result')
+            log.error('Response from api%s did not contain a query result' % self.script_extension)
             return None
         except Exception, e:
             log.error('Got exception: %r' % e)
             if ignore_errors:
                 return None
-            raise RuntimeError('api.php query failed. Are you sure you specified the correct base URL?')
+            raise RuntimeError('api%s query failed. Are you sure you specified the correct base URL?' % self.script_extension)
     
     def page_query(self, **kwargs):
         q = self.query(**kwargs)
@@ -273,6 +285,7 @@ class ImageDB(object):
         password=None,
         domain=None,
         api_helper=None,
+        script_extension=None,
     ):
         """
         @param base_url: base URL of a MediaWiki, e.g. 'http://en.wikipedia.org/w/'
@@ -289,13 +302,16 @@ class ImageDB(object):
         
         @param api_helper: APIHelper instance
         @type api_helper: L{APIHelper}
+        
+        @param script_extension: script extension for PHP scripts
+        @type script_extension: basestring
         """
         
         if api_helper is not None:
             assert base_url is None, 'either api_helper or base_url can be given, not both'
             self.api_helper = api_helper
         else:
-            self.api_helper = APIHelper(base_url)
+            self.api_helper = APIHelper(base_url, script_extension=script_extension)
         
         if username is not None:
             if not self.login(username, password, domain=domain):
@@ -423,42 +439,38 @@ class ImageDB(object):
         else:
             return None
     
-    def getLicense(self, name):
-        """Return license of image as stated on image description page
+    def getImageTemplates(self, name, wikidb=None):
+        """Return template names used on the image description page
         
         @param name: image name without namespace (e.g. without "Image:")
         @type name: unicode
         
-        @returns: license of image of None, if no valid license could be found
-        @rtype: unicode
+        @returns: list of template names
+        @rtype: [unicode]
         """
         
         assert isinstance(name, unicode), 'name must be of type unicode'
         
         desc_url = self.getDescriptionURL(name)
         if desc_url is None:
-            return None
+            return []
         
+        print desc_url
         api_helper = get_api_helper(desc_url)
         if api_helper is None:
-            return None
+            if wikidb is not None:
+                api_helper = wikidb.api_helper
+            else:
+                return []
         
         result = api_helper.page_query(titles='Image:%s' % name, prop='templates')
         if not result or 'templates' not in result:
-            return None
+            return []
         
         try:
-            templates = [t['title'] for t in result['templates']]
+            return [t['title'].split(':', 1)[-1] for t in result['templates']]
         except KeyError:
-            return None
-        
-        for t in templates:
-            try:
-                return lower2normal[t.split(':', 1)[-1].lower()]
-            except KeyError:
-                pass
-        
-        return None
+            return []
     
 
 # ==============================================================================
@@ -476,7 +488,9 @@ class WikiDB(wikidbbase.WikiDBBase):
         password=None,
         domain=None,
         template_blacklist=None,
+        template_exclusion_category=None,
         api_helper=None,
+        script_extension=None,
     ):
         """
         @param base_url: base URL of a MediaWiki,
@@ -496,15 +510,22 @@ class WikiDB(wikidbbase.WikiDBBase):
             templates (optional)
         @type template_blacklist: unicode
         
+        @param template_exclusion_category: title of a category for templates to
+            be excluded (optional)
+        @type template_exclusion_category: unicode
+        
         @param api_helper: APIHelper instance
         @type api_helper: L{APIHelper}
+        
+        @param script_extension: script extension for PHP scripts
+        @type script_extension: basestring
         """
         
         if api_helper is not None:
             assert base_url is None, 'either api_helper or base_url can be given, not both'
             self.api_helper = api_helper
         else:
-            self.api_helper = APIHelper(base_url)
+            self.api_helper = APIHelper(base_url, script_extension=script_extension)
         
         if username is not None:
             if not self.login(username, password, domain=domain):
@@ -514,33 +535,44 @@ class WikiDB(wikidbbase.WikiDBBase):
             raise MWAPIError('Invalid base URL: %r' % base_url)
         
         self.template_cache = {}
-        self.template_blacklist = []
-        if template_blacklist is not None:
-            self.setTemplateBlacklist(template_blacklist)
+        self.setTemplateExclusion(
+            blacklist=template_blacklist,
+            category=template_exclusion_category,
+        )
         self.source = None
     
-    def setTemplateBlacklist(self, template_blacklist):
-        raw = self.getRawArticle(template_blacklist)
-        if raw is None:
-            log.error('Could not get template blacklist article %r' % (
-                template_blacklist,
-            ))
-        else:
-            self.template_blacklist = [
-                template.lower().strip() 
-                for template in re.findall('\* *\[\[.*?:(.*?)\]\]', raw)
-            ]
-    
+    def setTemplateExclusion(self, blacklist=None, category=None):
+        self.template_exclusion_category = category
+        self.template_blacklist = []
+        if blacklist:
+            raw = self.getRawArticle(blacklist)
+            if raw is None:
+                log.error('Could not get template blacklist article %r' % (
+                    blacklist,
+                ))
+            else:
+                self.template_blacklist = [
+                    template.lower().strip() 
+                    for template in re.findall('\* *\[\[.*?:(.*?)\]\]', raw)
+                ]
+            
     def login(self, username, password, domain=None):
         return self.api_helper.login(username, password, domain=domain)
     
     def getURL(self, title, revision=None):
         name = urllib.quote(title.replace(" ", "_").encode('utf-8'), safe=':/@')
         if revision is None:
-            return '%sindex.php?title=%s' % (self.api_helper.base_url, name)
+            return '%sindex%s?title=%s' % (
+                self.api_helper.base_url,
+                self.api_helper.script_extension,
+                name,
+            )
         else:
-            return '%sindex.php?title=%s&oldid=%s' % (
-                self.api_helper.base_url, name, revision,
+            return '%sindex%s?title=%s&oldid=%s' % (
+                self.api_helper.base_url,
+                self.api_helper.script_extension,
+                name,
+                revision,
             )
     
     def getAuthors(self, title, revision=None, max_num_authors=10):
@@ -595,11 +627,6 @@ class WikiDB(wikidbbase.WikiDBBase):
         Note: *Not* following redirects is unsupported!
         """
         
-        try:
-            return self.template_cache[name]
-        except KeyError:
-            pass
-        
         if ":" in name:
             name = name.split(':', 1)[1]
         
@@ -607,16 +634,42 @@ class WikiDB(wikidbbase.WikiDBBase):
             log.info("ignoring blacklisted template:" , repr(name))
             return None
         
+        try:
+            return self.template_cache[name]
+        except KeyError:
+            pass
+        
         titles = ['Template:%s' % name]
         if self.print_template:
             titles.insert(0, self.print_template % name)
         for title in titles:
-            log.info("Trying template %r" % (title,))
-            c = self.getRawArticle(title)
-            if c is not None:
-                self.template_cache[name] = c
-                return c
+            raw = self.getRawArticle(title)
+            if raw is None:
+                continue
+            
+            if self.template_exclusion_category:
+                page = self.api_helper.page_query(
+                    titles=title,
+                    redirects=1,
+                    prop='categories',
+                )
+                if page is None:
+                    log.warn('Could not get categories for template %r' % title)
+                    continue
+                if 'categories' in page:
+                    categories = [
+                        c.get('title', '').split(':', 1)[-1]
+                        for c in page['categories']
+                    ]
+                    if self.template_exclusion_category in categories:
+                        log.info('Skipping excluded template %r' % title)
+                        continue
+            
+            self.template_cache[name] = raw
+            return raw
         
+        log.warn('Could not fetch template %r' % name)
+        self.template_cache[name] = None
         return None
     
     def getRawArticle(self, title, revision=None):
@@ -675,8 +728,7 @@ class WikiDB(wikidbbase.WikiDBBase):
                 name='%s (%s)' % (g['sitename'], g['lang']),
                 language=g['lang'],
             )
-            if self.interwikimap is None:
-                self.getInterwikiMap(title, revision=revision)
+            self.getInterwikiMap(title, revision=revision)
             if self.interwikimap:
                 self.source['interwikimap'] = self.interwikimap
             return self.source
@@ -692,15 +744,15 @@ class WikiDB(wikidbbase.WikiDBBase):
         @rtype: dict
         """
         
-        if self.interwikimap is not None:
+        if hasattr(self, 'interwikimap'):
             return self.interwikimap
+        self.interwikimap = {}
         result = self.api_helper.query(
             meta='siteinfo',
             siprop='interwikimap',
         ).get('interwikimap', [])
         if not result:
             return
-        self.interwikimap = {}
         for entry in result:
             interwiki = metabook.make_interwiki(api_entry=entry)
             self.interwikimap[interwiki['prefix']] = interwiki

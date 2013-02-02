@@ -220,6 +220,7 @@ class MWXHTMLWriter(object):
         
         
     def getTree(self, debuginfo=""):
+        assert self.root is not None
         indent(self.root) # breaks XHTML (proper rendering at least) if activated!
         if self.debug:
             r = validate(self.header + ET.tostring(self.root))
@@ -228,8 +229,18 @@ class MWXHTMLWriter(object):
         return self.root
     
     def asstring(self):
-        return self.header + ET.tostring(self.getTree())
-
+        def _r(obj, p=None):
+            for c in obj:
+                assert c is not None
+                for k,v in c.items():
+                    if v is None:
+                        print k,v
+                        assert v is not None
+                _r(c,obj)
+        _r(self.root)
+        #res = self.header + ET.tostring(self.getTree())
+        res = self.header + ET.tostring(self.root)
+        return res
     
     def writeText(self, obj, parent):
         if parent.getchildren(): # add to tail of last tag
@@ -322,7 +333,7 @@ class MWXHTMLWriter(object):
         h.text = a.caption
         self.writeChildren(a, e)
         for x in (self.writeCategoryLinks(), self.writeLanguageLinks()):
-            if x:
+            if x is not None:
                 e.append(x)
         return SkipChildren(e)
 
@@ -412,6 +423,7 @@ class MWXHTMLWriter(object):
             #r.text = obj.caption
             pass
         else:
+            assert r is not None
             s.append(r)
         return s
 
@@ -427,6 +439,8 @@ class MWXHTMLWriter(object):
         return a
 
     xwriteArticleLink = xwriteLink
+    xwriteInterwikiLink = xwriteLink
+    xwriteNamespaceLink = xwriteLink
 
 
     def xwriteURL(self, obj):
@@ -483,6 +497,9 @@ class MWXHTMLWriter(object):
         else:
             imgsrc = obj.target
 
+        if not imgsrc:
+            return None
+
         img = ET.SubElement(e, "img", src=imgsrc, alt="") 
         if obj.width:
             img.set("width", unicode(obj.width))
@@ -509,7 +526,7 @@ class MWXHTMLWriter(object):
             self.categorylinks.append(obj)
         return SkipChildren()
 
-    def writeCategoryLinks(self):
+    def writeCategoryLinks(self):       
         seen = set()
         if not self.categorylinks:
             return
@@ -554,6 +571,7 @@ class MWXHTMLWriter(object):
 
         
     def xwriteReference(self, t):
+        assert t is not None
         self.references.append(t)
         t =  ET.Element("sup")
         t.set("class", "mwx.reference")

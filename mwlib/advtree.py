@@ -18,8 +18,9 @@ http://en.wikipedia.org/wiki/Wikipedia:Don%27t_use_line_breaks
 http://meta.wikimedia.org/wiki/Help:Advanced_editing
 http://meta.wikimedia.org/wiki/Help:HTML_in_wikitext
 """
-
+import re
 import weakref
+
 from mwlib.parser import Magic, Math,  _VListNode, Ref, Link, URL, NamedURL # not used but imported
 from mwlib.parser import CategoryLink, SpecialLink, Caption, LangLink # not used but imported
 from mwlib.parser import ArticleLink, InterwikiLink, NamespaceLink
@@ -33,15 +34,12 @@ log = Log("advtree")
 
 
 def _idIndex(lst, el):
-    # return first appeareance of element in list
-    match = None
+    """Return index of first appeareance of element el in list lst"""
+    
     for i, e in enumerate(lst):
         if e is el:
-            assert match is None
-            match = i
-    if match is not None:
-        return match
-    raise ValueError
+            return i
+    raise ValueError('element %r not found' % el)
 
 def debug(method): # use as decorator
     def f(self, *args, **kargs):
@@ -56,12 +54,12 @@ def debug(method): # use as decorator
 
 
 class AdvancedNode:
-    """
-    MixIn Class that extends Nodes so they become easier accessible
+    """Mixin Class that extends Nodes so they become easier accessible.
 
-    allows to traverse the tree in any direction and 
+    Allows to traverse the tree in any direction and 
     build derived convinience functions
    """
+
     _parentref = None # weak referece to parent element
     isblocknode = False
 
@@ -75,11 +73,12 @@ class AdvancedNode:
         return n
 
 
-    def moveto(self, targetnode, prefix=False):
+    def moveto(self, targetnode, prefix=False): #FIXME: bad name. rename to moveBehind, and create method moveBefore
+        """Move this node behind the target node.
+
+        If prefix is true, move before the target node.
         """
-        moves this node after target node
-        if prefix is true, move in front of target node
-        """
+        
         if self.parent:
             self.parent.removeChild(self)
         tp = targetnode.parent
@@ -90,6 +89,7 @@ class AdvancedNode:
         self._parentref = weakref.ref(tp)
 
     def hasChild(self, c):
+        """Check if node c is child of self"""
         try:
             _idIndex(self.children, c)
             assert c.parent is self
@@ -106,7 +106,9 @@ class AdvancedNode:
         assert c.parent is None
 
     def replaceChild(self, c, newchildren = []):
-        assert self.hasChild(c)
+        """Remove child node c and replace with newchildren if given."""
+
+        assert self.hasChild(c), 'Error, unknown child'
         idx = _idIndex(self.children, c)
         self.children = self.children[:idx] + self.children[idx+1:]
         c._parentref = None
@@ -117,12 +119,17 @@ class AdvancedNode:
                 nc._parentref = weakref.ref(self)
 
     def getParents(self):
+        """Return list of parent nodes up to the root node.
+
+        The returned list starts with the root node.
+        """
         if self.parent:
             return self.parent.getParents() + [self.parent]
         else:
             return []
 
     def getParent(self):
+        """Return the parent node or raise weakref.ReferenceError"""
         if not self._parentref:
             return None
         x = self._parentref()
@@ -131,36 +138,37 @@ class AdvancedNode:
         return x
 
     def getLevel(self):
-        "returns the number of nodes of same class in parents"
+        """Returns the number of nodes of same class in parents"""
         return [p.__class__ for p in self.getParents()].count(self.__class__)
 
    
-    def getParentNodesByClass(self, klass):
-        "returns parents w/ klass"
+    def getParentNodesByClass(self, klass): #FIXME: rename to getParentsByClass
+        """returns parents w/ klass"""
         return [p for p in self.parents if p.__class__ == klass]
 
-    def getChildNodesByClass(self, klass):
-        "returns all children  w/ klass"
+    def getChildNodesByClass(self, klass): #FIXME: rename to getChildrenByClass
+        """returns all children  w/ klass"""
         return [p for p in self.getAllChildren() if p.__class__ == klass]
 
     def getAllChildren(self):
-        "don't confuse w/ Node.allchildren() which returns allchildren + self"
+        """don't confuse w/ Node.allchildren() which returns allchildren + self"""
         for c in self.children:
             yield c
             for x in c.getAllChildren():
                 yield x        
         
     def getSiblings(self):
+        """Return all siblings WITHOUT self"""
         return [c for c in self.getAllSiblings() if c is not self]
 
     def getAllSiblings(self):
-        "all siblings plus me my self and i"
+        """Return all siblings plus self"""
         if self.parent:
             return self.parent.children
         return []
 
     def getPrevious(self):
-        "return previous sibling"
+        """Return previous sibling"""
         s = self.getAllSiblings()
         try:
             idx = _idIndex(s,self)
@@ -172,7 +180,7 @@ class AdvancedNode:
             return s[idx-1]
 
     def getNext(self):
-        "return next sibling"
+        """Return next sibling"""
         s = self.getAllSiblings()
         try:
             idx = _idIndex(s,self)
@@ -183,31 +191,38 @@ class AdvancedNode:
         else:
             return s[idx+1]
 
-    def getLast(self):
-        "return last sibling"
+    def getLast(self): #FIXME might return self. is this intended?
+        """Return last sibling"""
         s = self.getAllSiblings()
         if s:
             return s[-1]
 
-    def getFirst(self):
-        "return first sibling"
+    def getFirst(self): #FIXME might return self. is this intended?
+        """Return first sibling"""
         s = self.getAllSiblings()
         if s:
             return s[0]
 
     def getLastChild(self):
-        "return last child of this node"
+        """Return last child of this node"""
         if self.children:
             return self.children[-1]
 
     def getFirstChild(self):
-        "return first child of this node"
+        "Return first child of this node"
         if self.children:
             return self.children[0]
 
     def getFirstLeaf(self, callerIsSelf=True):
+        """Return 'first' child that has no children itself"""
         if self.children:
-            return self.children[0].getFirstLeaf(callerIsSelf=False)
+            if self.__class__ == Section: # first kid of a section is its caption
+                if len(self.children) == 1:
+                    return None
+                else:
+                    return self.children[1].getFirstLeaf(callerIsSelf=False)
+            else:
+                return self.children[0].getFirstLeaf(callerIsSelf=False)
         else:
             if callerIsSelf:
                 return None
@@ -215,6 +230,7 @@ class AdvancedNode:
                 return self
 
     def getLastLeaf(self, callerIsSelf=True):
+        """Return 'last' child that has no children itself"""
         if self.children:
             return self.children[-1].getFirstLeaf(callerIsSelf=False)
         else:
@@ -223,10 +239,8 @@ class AdvancedNode:
             else:
                 return self
 
-
-
     def getAllDisplayText(self, amap = None):
-        "return all text that is intended for display"
+        "Return all text that is intended for display"
         text = []
         if not amap:
             amap = {Text:"caption", Link:"target", URL:"caption", Math:"caption", ImageLink:"caption" }
@@ -239,19 +253,6 @@ class AdvancedNode:
             return u''.join(alltext)
         else:
             return ''
-
-
-    nav_box_classes = set(('noprint', 'navframe', 'collapsible', 'autocollapse'))
-    def isNavBox(self):
-        """
-        navigation boxes at the bottom of articles seem to be automatically detectable by the use of the css styles.
-        we try to filter out these boxes (div, table etc. nodes) 
-        """
-        if hasattr(self, 'vlist'):
-            klasses = self.vlist.get('class')
-            if klasses and self.nav_box_classes.intersection(set(klasses.split())):
-                return True
-        return False
     
     def getStyle(self):
         if not self.attributes:
@@ -260,6 +261,7 @@ class AdvancedNode:
         return style
 
     def getAttributes(self):
+        """ Return dict with node attributes (e.g. class, style, colspan etc.)"""
         attrs = getattr(self, 'vlist', {})
         for n in ("colspan", "rowspan"): # col, row span attributes 
             v = attrs.get(n)
@@ -271,8 +273,9 @@ class AdvancedNode:
                 attrs[n] = max(attrs[n], 1)
         return attrs
 
-#    @debug
+
     def isVisible(self):
+        """Return True if node is visble. Used to detect hidden elements."""
         if self.style.get('display', '').lower() == 'none':
             return False
         if self.style.get('visibility','').lower() == 'hidden':
@@ -307,12 +310,13 @@ class AdvancedTable(AdvancedNode):
 
     @property 
     def numcols(self):
-        cols = [[n.__class__ for n in row].count(Cell) for row in self.rows]
-        if cols:
-            return max(cols)
-        else:
-            return 0
+        max_cols = 0
+        for row in self.children:
+            cols = sum([cell.attributes.get('colspan', 1) for cell in row.children])
+            max_cols = max(max_cols, cols)
+        return max_cols
 
+        
 class AdvancedRow(AdvancedNode):    
     @property 
     def cells(self):
@@ -334,7 +338,6 @@ class AdvancedCell(AdvancedNode):
 
 
 class AdvancedSection(AdvancedNode):
-    h_level = 0 # this is set if it originates from an H1, H2, ... TagNode
     def getSectionLevel(self):
         return 1 + self.getLevel()
 
@@ -377,9 +380,8 @@ class Blockquote(Style, AdvancedNode):
     "margins to left &  right"
     _tag = "blockquote"
     
-class Indented(Style, AdvancedNode):
+class Indented(Style, AdvancedNode): # fixme: node is deprecated, now style node ':' always becomes a DefinitionDescription
     "margin to the left"
-    # this is fixed
     def getIndentLevel(self):
         return self.caption.count(":")
     indentlevel = property(getIndentLevel)
@@ -507,12 +509,12 @@ Image depends on result of Image.isInline() see above
 Open Issues: Math, Magic, (unknown) TagNode 
 
 """
-_blockNodesMap = (Book, Chapter, Article, Section, Paragraph, Div, Center,
-                  PreFormatted, Cell, Row, Table, Item, BreakingReturn,
-                  ItemList, Timeline, Cite, HorizontalRule, Gallery, Indented, 
-                  DefinitionList, DefinitionTerm, DefinitionDescription, ReferenceList, Source)
+_blockNodes = (Blockquote, Book, Chapter, Article, Section, Paragraph, Div, Center,
+               PreFormatted, Cell, Row, Table, Item, BreakingReturn,
+               ItemList, Timeline, Cite, HorizontalRule, Gallery, Indented, 
+               DefinitionList, DefinitionTerm, DefinitionDescription, ReferenceList, Source)
 
-for k in _blockNodesMap:  
+for k in _blockNodes:  
   k.isblocknode = True
 
 
@@ -521,7 +523,7 @@ for k in _blockNodesMap:
 # funcs for extending the nodes
 # -------------------------------------------------------------------------
 
-def MixIn(pyClass, mixInClass, makeFirst=False):
+def mixIn(pyClass, mixInClass, makeFirst=False):
   if mixInClass not in pyClass.__bases__:
     if makeFirst:
       pyClass.__bases__ = (mixInClass,) + pyClass.__bases__
@@ -536,19 +538,16 @@ def extendClasses(node):
 # Nodes we defined above and that are separetly handled in extendClasses
 _advancedNodesMap = {Section: AdvancedSection, ImageLink:AdvancedImageLink, 
                      Math:AdvancedMath, Cell:AdvancedCell, Row:AdvancedRow, Table:AdvancedTable}
-MixIn(Node, AdvancedNode)
+mixIn(Node, AdvancedNode)
 for k, v in _advancedNodesMap.items():
-    MixIn(k,v)
+    mixIn(k,v)
     
 # --------------------------------------------------------------------------
-# funcs for repairing the tree
+# Functions for fixing the parse tree
 # -------------------------------------------------------------------------
 
-
 def fixTagNodes(node):
-    """
-    detect known TagNode(s) and associate appropriate Nodes
-    """
+    """Detect known TagNodes and and transfrom to appropriate Nodes"""
     for c in node.children:
         if c.__class__ == TagNode:
             if c.caption in _tagNodeMap:
@@ -556,16 +555,15 @@ def fixTagNodes(node):
             elif c.caption in ("h1", "h2", "h3", "h4", "h5", "h6"): # FIXME
                 # NEED TO MOVE NODE IF IT REALLY STARTS A SECTION
                 c.__class__ = Section 
-                MixIn(c.__class__, AdvancedSection)
+                mixIn(c.__class__, AdvancedSection)
                 c.level = int(c.caption[1])
                 c.caption = ""
             else:
                 log.warn("fixTagNodes, unknowntagnode %r" % c)
-                #raise Exception, "unknown tag %s" % c.caption # FIXME
         fixTagNodes(c)
 
 
-def fixStyle(node): #FIXME: rename to fixStyleNode or something like that
+def fixStyleNode(node): 
     """
     parser.Style Nodes are mapped to logical markup
     detection of DefinitionList depends on removeNodes
@@ -573,7 +571,6 @@ def fixStyle(node): #FIXME: rename to fixStyleNode or something like that
     """
     if not node.__class__ == Style:
         return
-    # replace this node by a more apporiate
     if node.caption == "''": 
         node.__class__ = Emphasized
         node.caption = ""
@@ -589,39 +586,29 @@ def fixStyle(node): #FIXME: rename to fixStyleNode or something like that
         node.__class__ = Strong
         node.caption = ""
     elif node.caption == ";": 
-        # this starts a definition list ? DL [DT->DD, ...]
-        # check if previous node is DefinitionList, if not create one
-        if node.previous.__class__ == DefinitionList:
-            node.__class__ = DefinitionTerm
-            node.moveto(node.previous.lastchild)
-        else:
-            node.__class__ = DefinitionList
-            dt = DefinitionTerm()
-            for c in node.children:
-                dt.appendChild(c)
-            node.children = []
-            node.appendChild(dt)
+        node.__class__ = DefinitionTerm
+        node.caption = ""
     elif node.caption.startswith(":"): 
-        if node.previous.__class__ == DefinitionList:
-            node.__class__ = DefinitionDescription
-            node.moveto(node.previous.lastchild)
-            node.caption = ""
-        else:
-            node.__class__ = Indented
+        node.__class__ = DefinitionDescription        
+        node.indentlevel = len(re.findall('^:+', node.caption)[0])
+        node.caption = ""
+    elif node.caption == '-':
+        node.__class__ = Blockquote
+        node.caption = ''
     elif node.caption in _styleNodeMap:
         node.__class__ = _styleNodeMap[node.caption]
         node.caption = ""
     else:
         log.warn("fixStyle, unknownstyle %r" % node)
-        #raise Exception, "unknown style %s" % node.caption # FIXME
-        pass
+        return node
+    
     return node
 
-def fixStyles(node): #FIXME: rename to fixStyleNodes or something like that
+def fixStyleNodes(node): 
     if node.__class__ == Style:
-        fixStyle(node)
+        fixStyleNode(node)
     for c in node.children[:]:
-        fixStyles(c)
+        fixStyleNodes(c)
 
 
 def removeNodes(node):
@@ -668,7 +655,7 @@ def buildAdvancedTree(root): # USE WITH CARE
     fixTagNodes(root)
     removeNodes(root)
     removeNewlines(root)
-    fixStyles(root) 
+    fixStyleNodes(root) 
     _validateParents(root)       
 
 
