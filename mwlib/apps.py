@@ -255,6 +255,7 @@ def render():
     import tempfile
     import traceback
     import pkg_resources
+    from mwlib.mwapidb import MWAPIError
     from mwlib.writerbase import WriterError
     from mwlib import recorddb, zipwiki
     
@@ -390,7 +391,7 @@ def render():
         if options.error_file:
             fd, tmpfile = tempfile.mkstemp(dir=os.path.dirname(options.error_file))
             f = os.fdopen(fd, 'wb')
-            if isinstance(e, WriterError):
+            if isinstance(e, WriterError) or isinstance(e, MWAPIError):
                 f.write(str(e))
             else:
                 traceback.print_exc(file=f) 
@@ -546,6 +547,14 @@ def serve():
         default='50',
         metavar='NUM',
     )
+    parser.add_option('--report-from-mail',
+        help='sender of error mails (--report-recipient also needed)',
+        metavar='EMAIL',
+    )
+    parser.add_option('--report-recipient',
+        help='recipient of error mails (--report-from-mail also needed)',
+        metavar='EMAIL',
+    )
     parser.add_option('--clean-cache',
         help='clean cache files that have not been touched for at least HOURS hours and exit',
         metavar='HOURS',
@@ -606,6 +615,13 @@ def serve():
     
     log.info("serving %s on %s:%s" % (options.protocol, options.interface, options.port))
     
+    if options.report_recipient and options.report_from_mail:
+        report_from_mail = options.report_from_mail.encode('utf-8')
+        report_recipients = [options.report_recipient.encode('utf-8')]
+    else:
+        report_from_mail = None
+        report_recipients = None
+    
     app = serve.Application(
         cache_dir=options.cache_dir,
         mwrender_cmd=options.mwrender,
@@ -615,6 +631,8 @@ def serve():
         mwpost_cmd=options.mwpost,
         mwpost_logfile=options.mwpost_logfile,
         queue_dir=options.queue_dir,
+        report_from_mail=report_from_mail,
+        report_recipients=report_recipients,
     )
     if options.protocol.startswith('http'):
         server = make_server(options.interface, options.port, app,
