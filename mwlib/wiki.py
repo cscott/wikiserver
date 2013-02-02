@@ -7,15 +7,24 @@ import os
 from ConfigParser import ConfigParser
 import StringIO
 
-from mwlib import utils
+from mwlib import utils, metabook
 from mwlib.log import Log
 
 log = Log('mwlib.utils')
 
 
-def wiki_mwapi(base_url=None, template_blacklist=None, **kwargs):
+def wiki_mwapi(
+    base_url=None,
+    template_blacklist=None,
+    username=None,
+    password=None,
+    **kwargs):
     from mwlib import mwapidb
-    return mwapidb.WikiDB(base_url, template_blacklist)
+    return mwapidb.WikiDB(base_url,
+        template_blacklist=template_blacklist,
+        username=username,
+        password=password,
+    )
 
 def wiki_zip(path=None, url=None, name=None, **kwargs):
     from mwlib import zipwiki
@@ -54,9 +63,9 @@ def wiki_cdb(path=None, **kwargs):
     db=cdbwiki.WikiDB(path)
     return db
 
-def image_mwapi(base_url=None, **kwargs):
+def image_mwapi(base_url=None, username=None, password=None, **kwargs):
     from mwlib import mwapidb
-    return mwapidb.ImageDB(base_url)
+    return mwapidb.ImageDB(base_url, username=username, password=password)
 
 def image_download(url=None, localpath=None, knownlicenses=None, **kwargs):
     assert url, "must supply url in [images] section"
@@ -127,10 +136,10 @@ url=
             return self.metabook.source
         if hasattr(self.wiki, 'getMetaData'):
             return self.wiki.getMetaData()
-        return {
-            'name': self.configparser.get('wiki', 'name'),
-            'url': self.configparser.get('wiki', 'url'),
-        }
+        return metabook.make_source(
+            name=self.configparser.get('wiki', 'name'),
+            url=self.configparser.get('wiki', 'url'),
+        )
     
     def get_licenses(self, icon_size=400):
         """Return list of licenses
@@ -144,6 +153,8 @@ url=
         
         licenses = []
         for license in self.metabook.licenses:
+            wikitext = ''
+            
             if license.get('mw_license_url'):
                 wikitext = utils.fetch_url(
                     license['mw_license_url'],

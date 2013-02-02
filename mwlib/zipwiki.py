@@ -8,8 +8,8 @@ import shutil
 import simplejson
 import tempfile
 from zipfile import ZipFile
+import urlparse
 
-from mwlib.metabook import MetaBook
 from mwlib import uparser
 
 class Wiki(object):
@@ -22,8 +22,7 @@ class Wiki(object):
             self.zf = zipfile
         else:
             self.zf = ZipFile(zipfile)
-        self.metabook = MetaBook()
-        self.metabook.loadJson(self.zf.read("metabook.json"))
+        self.metabook = simplejson.loads(self.zf.read("metabook.json"))
         content = simplejson.loads(self.zf.read('content.json'))
         self.articles = content['articles']
         self.templates = content['templates']
@@ -85,11 +84,28 @@ class ImageDB(object):
         self._tmpdir = tmpdir
         self.diskpaths = {}
     
+    def clear(self):
+        if self._tmpdir is not None:
+            shutil.rmtree(self._tmpdir)
+    
     @property
     def tmpdir(self):
         if self._tmpdir is None:
             self._tmpdir = unicode(tempfile.mkdtemp())
         return self._tmpdir
+
+    def getPath(self, name, size=None):
+        url = self.getURL(name, size=size)
+        if url is None:
+            return
+        path = urlparse.urlparse(url).path
+        pos = path.find('/thumb/')
+        if pos >= 0:
+            return path[pos + 1:]
+        if path.count('/') >= 4:
+            prefix, repo, hash1, hash2, name = url.rsplit('/', 4)
+            return '%s/%s/%s/%s' % (repo, hash1, hash2, name)
+        return path
     
     def getDiskPath(self, name, size=None):
         try:
