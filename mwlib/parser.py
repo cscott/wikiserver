@@ -412,6 +412,8 @@ def append_br_tag(node):
     br.starttext = '<br />'
     br.endtext = ''
     node.append(br)
+
+_ALPHA_RE = re.compile(r'[^\W\d_]+', re.UNICODE) # Matches alpha strings
             
 class Parser(object):
     def __init__(self, tokens, name=''):
@@ -559,6 +561,17 @@ class Parser(object):
                 self.next()
 
         obj._specialize()
+
+        if not obj.children and obj.target:
+            # [[a]] -> [[a|a]]
+            obj.append(Text(obj.target))
+
+        if self.left and self.token[0] == 'TEXT':
+            m = _ALPHA_RE.match(self.token[1])
+            if m:
+                # [[a|a]]b -> [[a|ab]]
+                obj.append(Text(m.group(0)), True)
+                self.tokens[self.pos] = ('TEXT', self.token[1][m.end():])
             
         return obj
     
@@ -764,8 +777,11 @@ class Parser(object):
                 s.append(self.parseSection())
             elif token[0] in FirstParagraph:
                 s.append(self.parseParagraph())
-            else:
+            elif token[0]=='BREAK':
                 log.info("in parseSection: skipping", token)
+                self.next()
+            else:
+                log.info("ending section with token", token)
                 break
                 
         return s
@@ -954,9 +970,17 @@ class Parser(object):
             
     def parseTable(self):
         token = self.token
+                
         self.next()
         t = Table()
-
+        retval = t
+        
+        if '{|' in token[1]:
+            indent = token[1].count(':')
+            if indent:
+                retval = Style(':'*indent)
+                retval.append(t)
+                
         params = ""
         if "{|" in token[1]:   # not a <table> tag
             # everything till the next newline/break is a parameter list
@@ -987,7 +1011,7 @@ class Parser(object):
                 self.next()
                 #t.append(self.parseRow())
 
-        return t
+        return retval
 
     def parseMath(self):
         self.next()

@@ -11,6 +11,7 @@ http://meta.wikimedia.org/wiki/ParserFunctions
 
 import datetime
 import urllib
+import urlparse
 from mwlib.log import Log
 from mwlib import expr
 
@@ -51,6 +52,11 @@ def maybe_numeric_compare(a,b):
         return False
 
     return a==b
+
+def urlquote(u):
+    if isinstance(u, unicode):
+        u = u.encode('utf-8')
+    return urllib.quote(u)
 
 
 class OtherMagic(object):
@@ -133,8 +139,11 @@ class TimeMagic(object):
 class PageMagic(object):
     def __init__(self, pagename='', server="http://en.wikipedia.org", revisionid=0):
         self.pagename = pagename
+        self.qpagename = pagename.replace(' ', '_')
         self.server = server
         self.revisionid = revisionid
+        
+        self.niceurl = urlparse.urljoin(self.server, 'wiki')
         
     def PAGENAME(self, args):
         """Returns the name of the current page, including all levels (Title/Subtitle/Sub-subtitle)"""
@@ -144,8 +153,13 @@ class PageMagic(object):
         """same as PAGENAME but More URL-friendly percent encoded
         special characters (To use an articlename in an external link).
         """
-        return urllib.quote(self.pagename.encode('utf8'))
+        return urlquote(self.qpagename)
 
+    def FULLPAGENAME(self, args):
+        return self.pagename # FIXME
+
+    def FULLPAGENAMEE(self, args):
+        return urlquote(self.qpagename)
     
     def SUBPAGENAME(self, args):
         """[MW1.6+] Returns the name of the current page, excluding parent
@@ -154,7 +168,7 @@ class PageMagic(object):
         return self.pagename.split('/')[-1]
 
     def SUBPAGENAMEE(self, args):
-        return urllib.quote(self.SUBPAGENAMEE())
+        return urlquote(self.qpagename.split('/')[-1])
 
     def BASEPAGENAME(self, args):
         """[MW1.7+] The basename of a subpage ('Title/Subtitle' becomes 'Title')
@@ -164,7 +178,7 @@ class PageMagic(object):
     def BASEPAGENAMEE(self, args):
         """[MW1.7+] The basename of a subpage ('Title/Subtitle' becomes 'Title')
         """
-        return urllib.quote(self.BASEPAGENAME(args))
+        return urlquote(self.qpagename.rsplit('/', 1)[0])
 
     def NAMESPACE(self, args):
         """Returns the name of the namespace the current page resides in."""
@@ -201,10 +215,7 @@ class PageMagic(object):
     
     def URLENCODE(self, args):
         """[MW1.7+] To use a variable (parameter in a template) with spaces in an external link."""
-        try:
-            url = urllib.quote_plus("".join(args[0]))
-        except:
-            url = "".join(args[0])
+        url = urllib.quote_plus(args[0].encode('utf-8'))
         return url
 
     @noarg
@@ -213,13 +224,13 @@ class PageMagic(object):
         return self.server
 
     def FULLURL(self, args):
-        return u''
-        u = "".join(args)
-        self.SERVERNAME({})
-
+        a=args[0].capitalize().replace(' ', '_')
+        a=urllib.quote_plus(a.encode('utf-8'))
+        return '%s/%s' % (self.niceurl, a)
+    
     @noarg        
     def SERVERNAME(self):
-        return self.SERVER({})[len("http://"):]
+        return self.server[len('http://'):]
 
 
 class NumberMagic(object):
@@ -270,6 +281,27 @@ class StringMagic(object):
     def FORMATNUM(self, a):
         return a
 
+    def PADLEFT(self, args):
+        s=args[0]
+        try:
+            width=int(args[1])
+        except ValueError:
+            return s
+        
+        fillchar = args[2] or u'0'
+        return s.rjust(width, fillchar[0])
+    
+    def PADRIGHT(self, args):
+        s=args[0]
+        try:
+            width=int(args[1])
+        except ValueError:
+            return s
+        
+        fillchar = args[2] or u'0'
+        return s.ljust(width, fillchar[0])
+        
+    
 class ParserFunctions(object):
     wikidb = None
     def _error(self,s):

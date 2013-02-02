@@ -8,7 +8,6 @@ import os
 import re
 import shutil
 import tempfile
-import time
 import urllib
 import urllib2
 import urlparse
@@ -28,8 +27,13 @@ except ImportError:
 
 # ==============================================================================
 
+fetch_cache = {}
+max_cacheable_size = 1024
 
 def fetch_url(url, ignore_errors=False):
+    if url in fetch_cache:
+        return fetch_cache[url]
+    
     log.info("fetching %r" % (url,))
     opener = urllib2.build_opener()
     opener.addheaders = [('User-agent', 'mwlib')]
@@ -41,6 +45,10 @@ def fetch_url(url, ignore_errors=False):
             return None
         raise RuntimeError('Could not fetch %r: %s' % (url, err))
     log.info("got %r (%d Bytes)" % (url, len(data)))
+    
+    if len(data) < max_cacheable_size:
+        fetch_cache[url] = data
+    
     return data
 
 
@@ -62,6 +70,7 @@ class APIHelper(object):
             self.base_url = base_url
         if self.base_url[-1] != '/':
             self.base_url += '/'
+        self.query_cache = {}
     
     def query(self, **kwargs):
         args = {
@@ -72,7 +81,8 @@ class APIHelper(object):
         for k, v in args.items():
             if isinstance(v, unicode):
                 args[k] = v.encode('utf-8')
-        data = fetch_url('%sapi.php?%s' % (self.base_url, urllib.urlencode(args)))
+        q = urllib.urlencode(args).replace('%3A', ':') # fix for wrong quoting of url for images
+        data = fetch_url('%sapi.php?%s' % (self.base_url, q))
         if data is None:
             return None
         try:
@@ -100,6 +110,16 @@ class APIHelper(object):
 
 class ImageDB(object):
     def __init__(self, base_url, shared_base_url=None):
+        """
+        @param base_url: base URL of a MediaWiki,
+            e.g. 'http://en.wikipedia.org/w/'
+        @type base_url: basestring
+        
+        @param shared_base_url: base URL of a shared MediaWiki,
+            e.g. 'http://commons.wikimedia.org/w/' for commons MediaWikis
+        @type base_url: basestring
+        """
+        
         self.api_helpers = [APIHelper(base_url)]
         if shared_base_url is not None:
             self.api_helpers.append(APIHelper(shared_base_url))
@@ -107,6 +127,36 @@ class ImageDB(object):
     
     def clear(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+    
+    def getDescriptionURL(self, name):
+        """Return URL of image description page for image with given name
+        
+        @param name: image name (w/out namespace, i.e. w/out 'Image:')
+        @type name: unicode
+        
+        @returns: URL to image description page
+        @rtype: str
+        """
+    
+        assert isinstance(name, unicode), 'name must be of type unicode'
+        
+        for api_helper in self.api_helpers:
+            result = api_helper.page_query(titles='Image:%s' % name, prop='imageinfo', iiprop='url')
+            if result is not None:
+                break
+        else:
+            return None
+        
+        try:
+            imageinfo = result['imageinfo'][0]
+            url = imageinfo['descriptionurl']
+            if url: # url can be False
+                if url.startswith('/'):
+                    url = urlparse.urljoin(self.api_helpers[0].base_url, url)
+                return url
+            return None
+        except (KeyError, IndexError):
+            return None
     
     def getURL(self, name, size=None):
         """Return image URL for image with given name
@@ -192,7 +242,7 @@ class ImageDB(object):
         
         for api_helper in self.api_helpers:
             result = api_helper.page_query(titles='Image:%s' % name, prop='templates')
-            if result is not None:
+            if result and 'templates' in result:
                 break
         else:
             return None
@@ -215,7 +265,7 @@ class ImageDB(object):
 
     
 class WikiDB(object):
-    print_template = u'Template:Print%s'
+    print_template = u'Template:Print%s' # set this to none to deacticate # FIXME
     
     ip_rex = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
     bot_rex = re.compile(r'\bbot\b', re.IGNORECASE)
@@ -315,7 +365,10 @@ class WikiDB(object):
             log.info("ignoring blacklisted template:" , repr(name))
             return None
         
-        for title in (self.print_template % name, 'Template:%s' % name):
+        titles = ['Template:%s' % name]
+        if self.print_template:
+            titles.append(self.print_template % name)
+        for title in titles:
             log.info("Trying template %r" % (title,))
             c = self.getRawArticle(title)
             if c is not None:
@@ -325,6 +378,9 @@ class WikiDB(object):
         return None
     
     def getRawArticle(self, title, revision=None):
+        if not title:
+            return None
+        
         if revision is None:
             page = self.api_helper.page_query(titles=title, redirects=1, prop='revisions', rvprop='content')
         else:
@@ -342,14 +398,20 @@ class WikiDB(object):
         result = self.api_helper.query(meta='siteinfo')
         try:
             g = result['general']
-            return {
-                'license': {
-                    'name': g['rights'],
-                    'wikitext': self.getRawArticle(self.license),
-                },
+            result = {
                 'url': g['base'],
                 'name': '%s (%s)' % (g['sitename'], g['lang']),
             }
+            if self.license is None:
+                log.warn('No license given')
+            else: 
+                wikitext = self.getRawArticle(self.license)
+                assert wikitext is not None, 'Could not get license article %r' % self.license
+                result['license'] = {
+                    'name': g['rights'],
+                    'wikitext': wikitext,
+                }
+            return result
         except KeyError:
             return None
     

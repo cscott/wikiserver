@@ -30,7 +30,7 @@ splitpattern = """
 |(?:<pre.*?>.*?</pre>)
 |(?:=)
 |(?:[:\[\]\|{}<])                                  # all special characters
-|(?:[^=\[\]\|:{}<]*))                              # all others
+|(?:[^=\[\]\|:{}<]*))                               # all others
 """
 
 splitrx = re.compile(splitpattern, re.VERBOSE | re.DOTALL | re.IGNORECASE)
@@ -208,6 +208,7 @@ class Parser(object):
         if len(children) == 0:
             return t
         
+        idx = 0
         for idx, c in enumerate(children):
             if c==u'|':
                 break
@@ -220,7 +221,7 @@ class Parser(object):
         arg = Node()
 
         linkcount = 0
-        for idx, c in enumerate(children[idx+1:]):
+        for c in children[idx+1:]:
             if c==u'[[':
                 linkcount += 1
             elif c==']]':
@@ -333,15 +334,17 @@ class LazyArgument(object):
 
                 name = self._flattennode(name)
                 self.node.children = oldchildren
-
+                
             val = self._flattennode(val)
 
             self._splitflatten = name, val
         return self._splitflatten
-
+    
+            
     def flatten(self):
-        if self._flatten is None:
+        if self._flatten is None:            
             self._flatten = self._flattennode(self.node).strip()
+            
             arg=[]
             self.expander.flatten(self.node, arg, self.variables)
 
@@ -363,9 +366,6 @@ class ArgumentList(object):
     def append(self, a):
         self.args.append(a)
 
-    def get(self, n, default):
-        return self.__getitem__(n) or default
-
     def __iter__(self):
         for x in self.args:
             yield x
@@ -378,11 +378,14 @@ class ArgumentList(object):
         return len(self.args)
 
     def __getitem__(self, n):
+        return self.get(n, None) or u''
+        
+    def get(self, n, default):
         if isinstance(n, (int, long)):
             try:
                 a=self.args[n]
             except IndexError:
-                return u""
+                return default
             return a.flatten()
 
         assert isinstance(n, basestring), "expected int or string"
@@ -391,6 +394,8 @@ class ArgumentList(object):
         if n not in self.namedargs:
             for x in self.args:
                 name, val = x.splitflatten()
+                
+                
                 if name is not None:
                     name = name.strip()
                     val = val.strip()
@@ -400,17 +405,28 @@ class ArgumentList(object):
                 else:
                     name = str(varcount)
                     varcount+=1
-                    self.namedargs[name] = val
+                    self.namedargs[name] = val 
 
                     if n==name:
                         return val
-            self.namedargs[n] = u''
+            self.namedargs[n] = None
 
         val = self.namedargs[n]
-
+        if val is None:
+            return default
         return val
     
-            
+def add_implicit_newline(raw):
+    """add newline to templates starting with *, #, :, ;, {|
+    see: http://meta.wikimedia.org/wiki/Help:Newlines_and_spaces#Automatic_newline_at_the_start
+    """
+    sw = raw.startswith
+    for x in ('*', '#', ':', ';', '{|'):
+        if sw(x):
+            return '\n'+raw
+    return raw
+
+
 class Expander(object):
     def __init__(self, txt, pagename="", wikidb=None, templateprefix='Template:', templateblacklist=set(), lang='en'):
         assert wikidb is not None, "must supply wikidb argument in Expander.__init__"
@@ -452,11 +468,7 @@ class Expander(object):
             log.warn("no template", repr(name))
             res = None
         else:
-            # add newline to templates starting with a (semi)colon, or tablemarkup
-            # XXX what else? see test_implicit_newline in test_expander
-            if raw.startswith(":") or raw.startswith(";") or raw.startswith("{|"):
-                raw = '\n'+raw
-                
+            raw = add_implicit_newline(raw)
             log.info("parsing template", repr(name))
             res = Parser(raw).parse()
             if DEBUG:
@@ -499,17 +511,17 @@ class Expander(object):
             rep = self.resolver(name, var)
 
             if rep is not None:
-                res.append(rep)
+                res.append(add_implicit_newline(rep))
             else:            
                 p = self.getParsedTemplate(name)
                 if p:
                     if DEBUG:
-                        msg = "EXPANDING %r %s  ===> " % (name, var)
+                        msg = "EXPANDING %r %r  ===> " % (name, var)
                         oldidx = len(res)
                     self.flatten(p, res, var)
 
                     if DEBUG:
-                        msg += "".join(res[oldidx:])
+                        msg += repr("".join(res[oldidx:]))
                         print msg
                     
                     
@@ -565,17 +577,17 @@ class DictDB(object):
     def getTemplate(self, title, dummy):
         return self.d.get(title.lower(), u"")
     
-def expandstr(s, expected=None, wikidb=None):
+def expandstr(s, expected=None, wikidb=None, pagename='thispage'):
     """debug function. expand templates in string s"""
     if wikidb:
         db = wikidb
     else:
         db = DictDB(dict(a=s))
 
-    te = Expander(s, pagename="thispage", wikidb=db)
+    te = Expander(s, pagename=pagename, wikidb=db)
     res = te.expandTemplates()
     print "EXPAND: %r -> %r" % (s, res)
-    if expected:
+    if expected is not None:
         assert res==expected, "expected %r, got %r" % (expected, res)
     return res
 

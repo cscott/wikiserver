@@ -16,6 +16,7 @@ to be:
 Usefull Documentation:
 http://en.wikipedia.org/wiki/Wikipedia:Don%27t_use_line_breaks
 http://meta.wikimedia.org/wiki/Help:Advanced_editing
+http://meta.wikimedia.org/wiki/Help:HTML_in_wikitext
 """
 
 import weakref
@@ -185,6 +186,26 @@ class AdvancedNode:
         if self.children:
             return self.children[0]
 
+    def getFirstLeaf(self, callerIsSelf=True):
+        if self.children:
+            return self.children[0].getFirstLeaf(callerIsSelf=False)
+        else:
+            if callerIsSelf:
+                return None
+            else:
+                return self
+
+    def getLastLeaf(self, callerIsSelf=True):
+        if self.children:
+            return self.children[-1].getFirstLeaf(callerIsSelf=False)
+        else:
+            if callerIsSelf:
+                return None
+            else:
+                return self
+
+
+
     def getAllDisplayText(self, amap = None):
         "return all text that is intended for display"
         text = []
@@ -257,29 +278,27 @@ class AdvancedMath(AdvancedNode):
 # Missing as Classes derived from parser.Style
 # -------------------------------------------------------------------------
 
-    
+class Italic(Style, AdvancedNode):
+    _tag = "i"
+
 class Emphasized(Style, AdvancedNode):
-    "EM"
-    pass
+    _tag = "em"
 
 class Strong(Style, AdvancedNode):
-    pass
+    _tag = "strong"
 
 class DefinitionList(Style, AdvancedNode):
-    "DL"
-    pass
+    _tag = "dl"
 
 class DefinitionTerm(Style, AdvancedNode):
-    "DT"
-    pass
+    _tag = "dt"
 
 class DefinitionDescription(Style, AdvancedNode):
-    "DD"
-    pass
+    _tag = "dd"
 
 class Blockquote(Style, AdvancedNode):
     "margins to left &  right"
-    pass
+    _tag = "blockquote"
 
 class Indented(Style, AdvancedNode):
     "margin to the left"
@@ -292,25 +311,37 @@ class Underline(Style, AdvancedNode):
 
 class Sub(Style, AdvancedNode):
     _style = "sub"
+    _tag = "sub"
 
 class Sup(Style, AdvancedNode):
     _style = "sup"
+    _tag = "sup"
 
 class Small(Style, AdvancedNode):
     _style = "small"
+    _tag = "small"
 
 class Big(Style, AdvancedNode):
     _style = "big"
+    _tag = "big"
 
 class Cite(Style, AdvancedNode):
     _style = "cite"
+    _tag = "cite"
+
+class Var(TagNode, AdvancedNode): 
+    _tag = "var"
+    _style = "var"
 
 
-_styleNodeMap = dict( (k._style,k) for k in [Overline, Underline, Sub, Sup, Small, Big, Cite] )
+
+_styleNodeMap = dict( (k._style,k) for k in [Overline, Underline, Sub, Sup, Small, Big, Cite,Var] )
 
 # --------------------------------------------------------------------------
 # Missing as Classes derived from parser.TagNode
+# http://meta.wikimedia.org/wiki/Help:HTML_in_wikitext
 # -------------------------------------------------------------------------
+
 
 class Source(TagNode, AdvancedNode):
     _tag = "source"
@@ -353,8 +384,30 @@ class Strike(TagNode,AdvancedNode):
 
 class ImageMap(TagNode, AdvancedNode): # defined as block node, maybe incorrect
     _tag = "imagemap"
+
+class Ruby(TagNode, AdvancedNode): 
+    _tag = "ruby"
+
+class RubyBase(TagNode, AdvancedNode):
+    _tag = "rb"
+
+class RubyParentheses(TagNode, AdvancedNode):
+    _tag = "rp"
+
+class RubyText(TagNode, AdvancedNode): 
+    _tag = "rt"
+
+class Deleted(TagNode, AdvancedNode): 
+    _tag = "del"
+
+class Inserted(TagNode, AdvancedNode): 
+    _tag = "ins"
+
+class TableCaption(TagNode, AdvancedNode): 
+    _tag = "caption"
+
     
-_tagNodeMap = dict( (k._tag,k) for k in [Source, Code, BreakingReturn, HorizontalRule, Index, Teletyped, Reference, ReferenceList, Gallery, Center, Div, Span, Strike, ImageMap] )
+_tagNodeMap = dict( (k._tag,k) for k in [Source, Code, BreakingReturn, HorizontalRule, Index, Teletyped, Reference, ReferenceList, Gallery, Center, Div, Span, Strike, ImageMap, Ruby, RubyBase, RubyText, Deleted, Inserted, TableCaption] )
 _styleNodeMap["s"] = Strike # Special Handling for deprecated s style
 
 
@@ -373,7 +426,7 @@ Image depends on result of Image.isInline() see above
 Open Issues: Math, Magic, (unknown) TagNode 
 
 """
-_blockNodesMap = (Book, Chapter, Article, Section, Paragraph, Div,
+_blockNodesMap = (Book, Chapter, Article, Section, Paragraph, Div, Center,
                   PreFormatted, Cell, Row, Table, Item, BreakingReturn,
                   ItemList, Timeline, Cite, HorizontalRule, Gallery, Indented, 
                   DefinitionList, DefinitionTerm, DefinitionDescription, ReferenceList, Source)
@@ -506,7 +559,7 @@ def removeNewlines(node):
     """
     remove newlines, tabs, spaces if we are next to a blockNode
     """
-    if node.__class__ == Text and not node.getParentNodesByClass(PreFormatted) and not node.getParentNodesByClass(Source):
+    if node.__class__ == Text and not node.getParentNodesByClass(PreFormatted) and not node.getParentNodesByClass(Source) and node.caption:
         if node.caption.strip() == u"":
             prev = node.previous or node.parent # previous sibling node or parentnode 
             next = node.next or node.parent.next
@@ -541,5 +594,13 @@ def getAdvTree(fn):
     buildAdvancedTree(r)
     return r
 
-
+def simpleparse(raw):    # !!! USE FOR DEBUGGING ONLY !!! 
+    import sys
+    from mwlib import dummydb, parser
+    from mwlib.uparser import parseString
+    input = raw.decode('utf8')
+    r = parseString(title="title", raw=input, wikidb=dummydb.DummyDB())
+    buildAdvancedTree(r)
+    parser.show(sys.stdout, r, 0)
+    return r
 
