@@ -49,12 +49,11 @@ class RedirectParser:
         self.reversed_index = {}
         count = 0
         for line in input_redirects.readlines():
-            links = links = self.link_re.findall(unicode(line))
+            links = self.link_re.findall(unicode(line))
             if len(links) == 2:
-                origin = links[0][2:-2]
-                destination = links[1][2:-2]
-                self.redirects[normalize_title(origin)] = \
-                        normalize_title(destination)
+                origin = normalize_title(links[0][2:-2])
+                destination = normalize_title(links[1][2:-2])
+                self.redirects[origin] = destination
                 # add to the reversed index
                 if destination in self.reversed_index:
                     self.reversed_index[destination].append(origin)
@@ -67,8 +66,7 @@ class RedirectParser:
 
     def get_redirected(self, article_title):
         try:
-            article_title = article_title.capitalize()
-            redirect = self.redirects[article_title]
+            redirect = self.redirects[normalize_title(article_title)]
         except:
             redirect = None
         return redirect

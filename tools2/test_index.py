@@ -28,10 +28,11 @@ class RedirectParser:
         self.redirects = {}
         count = 0
         while line:
-            links = links = self.link_re.findall(unicode(line))
+            links = self.link_re.findall(unicode(line))
             if len(links) == 2:
-                self.redirects[normalize_title(links[0])] = \
-                        normalize_title(links[1])
+                origin = normalize_title(links[0][2:-2])
+                destination = normalize_title(links[1][2:-2])
+                self.redirects[origin] = destination
             line = input_redirects.readline()
             count += 1
             print "Processing %d\r" % count,
@@ -39,8 +40,7 @@ class RedirectParser:
 
     def get_redirected(self, article_title):
         try:
-            article_title = article_title.capitalize()
-            redirected = self.redirects[article_title]
+            redirect = self.redirects[normalize_title(article_title)]
         except:
             redirect = None
         return redirect

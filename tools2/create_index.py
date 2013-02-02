@@ -92,8 +92,8 @@ class RedirectParser:
         for line in input_redirects.readlines():
             links = self.link_re.findall(unicode(line))
             if len(links) == 2:
-                origin = links[0][2:-2]
-                destination = links[1][2:-2]
+                origin = normalize_title(links[0][2:-2])
+                destination = normalize_title(links[1][2:-2])
                 self.redirects[origin] = destination
             #print "Processing %s" % normalize_title(origin)
         logging.error("Loaded %d redirects" % len(self.redirects))
