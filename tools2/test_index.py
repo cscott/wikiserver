@@ -13,7 +13,8 @@ input_xml_file_name = config.input_xml_file_name
 
 
 def normalize_title(title):
-    return title.strip().replace(' ', '_').capitalize()
+    s = title.strip().replace(' ', '_')
+    return s[0].capitalize() + s[1:]
 
 
 class RedirectParser:

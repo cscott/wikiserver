@@ -12,7 +12,9 @@ import config
 
 
 def normalize_title(title):
-    return title.strip().replace(' ', '_').capitalize()
+    s = title.strip().replace(' ', '_')
+    if len(s) == 0: return ''
+    return s[0].capitalize() + s[1:]
 
 
 class WikimediaXmlPagesProcessor(handler.ContentHandler):

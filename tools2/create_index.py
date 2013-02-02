@@ -16,7 +16,8 @@ input_xml_file_name = config.input_xml_file_name
 
 
 def normalize_title(title):
-    return title.strip().replace(' ', '_').capitalize()
+    s = title.strip().replace(' ', '_')
+    return s[0].capitalize() + s[1:]
 
 
 def create_index(pages_blacklist):
@@ -50,7 +51,7 @@ def create_index(pages_blacklist):
                     data_line = p.stdout.readline()
                     position += len(data_line)
                     try:
-                        title = title[0:-1].strip().capitalize()
+                        title = normalize_title(title[0:-1])
                         if title not in pages_blacklist:
                             output_file.write("%s %d %d\n" % \
                                 (title, num_block, position))

@@ -8,7 +8,7 @@ import codecs
 import os
 import config
 from make_selection import FileListReader, RedirectParser, RedirectsUsedWriter
-from make_selection import CountedTemplatesReader
+from make_selection import CountedTemplatesReader, normalize_title
 if __name__ == '__main__':
 
     input_xml_file_name = config.input_xml_file_name
@@ -32,7 +32,7 @@ if __name__ == '__main__':
                 size_line = processed_file.readline()
                 # \02
                 data_line = processed_file.readline()
-                title = title[0:-1].strip().capitalize()
+                title = normalize_title(title[0:-1])
                 if title not in ignored_pages_reader.list:
 
                     # \01
