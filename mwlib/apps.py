@@ -78,204 +78,242 @@ def show():
         print raw.encode("utf-8")
 
 def buildzip():
-    parser = optparse.OptionParser(usage="%prog [OPTIONS] [ARTICLE ...]")
-    parser.add_option("-c", "--conf", help="config file (required unless --baseurl is given)")
-    parser.add_option("-b", "--baseurl", help="base URL for mwapidb backend")
-    parser.add_option("-s", "--shared-baseurl", help="base URL for shared images for mwapidb backend")
-    parser.add_option("-m", "--metabook", help="JSON encoded text file with book structure")
-    parser.add_option('--collectionpage', help='Title of a collection page')
-    parser.add_option("-x", "--noimages", action="store_true", help="exclude images")
+    from mwlib.options import OptionParser
+
+    parser = OptionParser()
     parser.add_option("-o", "--output", help="write output to OUTPUT")
     parser.add_option("-p", "--posturl", help="http post to POSTURL (directly)")
-    parser.add_option("-g", "--getposturl", action="store_true", help="get posturl from pp and direct browser to upload url")
+    parser.add_option("-g", "--getposturl",
+                      help='get POST URL from PediaPress.com and open upload page in webbrowser',
+                      action='store_true')
     parser.add_option("-i", "--imagesize",
-                      help="max. pixel size (width or height) for images (default: 800)")
+                      help="max. pixel size (width or height) for images (default: 800)",
+                      default=800)
     parser.add_option("-d", "--daemonize", action="store_true",
-                      help='become daemon after collection articles (before POST request)')
-    parser.add_option("-l", "--logfile", help="log to logfile")
-    parser.add_option("--license", help="Title of article containing full license text")
-    parser.add_option("--template-blacklist", help="Title of article containing blacklisted templates")
+                      help='become a daemon process as soon as possible')
     options, args = parser.parse_args()
     
-    import tempfile
-    import os
-    import zipfile
-    import simplejson
-    from mwlib import utils
-    from mwlib.utils import daemonize
-    import urllib
-    import urllib2
-
-    articles = [unicode(x, 'utf-8') for x in args]
-    
-    baseurl = options.baseurl
-    conf = options.conf
-    if not baseurl and not options.conf:
-        parser.error("neither --conf nor --baseurl specified\nuse --help for all options")
-    
-    posturl = None
-    posturl = options.posturl
-    if posturl:
-        posturl = posturl.encode('utf-8')
-
-    # automatically acquires a post url 
-    if not posturl and options.getposturl:
-        serviceurl = "http://pediapress.com/api/collections/"
-        browsercmd = "firefox %s &"
-        u = urllib2.urlopen(serviceurl, data="any")
-        h = simplejson.loads(u.read())
-        posturl = h["post_url"]
-        redirect_url = h["redirect_url"]
-        os.system(browsercmd % redirect_url)
-        print "acquired post url", posturl
-        print "redirected browser to", redirect_url
-
-
-    def post_status(status):
-        print 'status:', status
-        if not posturl:
-            return
-        try:
-            return urllib2.urlopen(posturl, urllib.urlencode({'status': status})).read()
-        except Exception, e:
-            print 'ERROR posting status %r to %r: %s' % (status, posturl, e)
-    
-    def post_progress(progress):
-        progress = int(progress)
-        print 'progress', progress
-        if not posturl:
-            return
-        try:
-            return urllib2.urlopen(posturl, urllib.urlencode({'progress': progress})).read()
-        except Exception, e:
-            print 'ERROR posting progress %d to %r: %s' % (progress, posturl, e)
+    use_help = 'Use --help for usage information.'
+    if options.posturl and options.getposturl:
+        parser.error('Please specify either --posturl or --getposturl, not both.\n' + use_help)
+    if not options.posturl and not options.getposturl and not options.output:
+        parser.error('Neither --output, nor --posturl or --getposturl specified. This would result in a no-op...')
     
     try:
-        if options.logfile:
-            utils.start_logging(options.logfile)
-            
-        output = options.output
-
-        from mwlib import wiki, recorddb, metabook
-        
-        mb = metabook.MetaBook()
-        if conf:
-            from ConfigParser import ConfigParser
-
-            w = wiki.makewiki(conf)
-            cp = ConfigParser()
-            cp.read(conf)
-            mb.source = {
-                'name': cp.get('wiki', 'name'),
-                'url': cp.get('wiki', 'url'),
-            }
-            license_name = cp.get('wiki', 'defaultarticlelicense')
-            if license_name is not None:
-                wikitext = w['wiki'].getRawArticle(license_name)
-                assert wikitext is not None, 'Could not get license article %r' % license_name
-                mb.source['defaultarticlelicense'] = {
-                    'name': license_name,
-                    'wikitext': wikitext,
-                }
-        else:
-            w = {
-                'wiki': wiki.wiki_mwapi(baseurl, options.license, options.template_blacklist),
-                'images': wiki.image_mwapi(baseurl, shared_base_url=options.shared_baseurl)
-            }
-            metadata = w['wiki'].getMetaData()
-            mb.source = {
-                'name': metadata['name'],
-                'url': metadata['url'],
-            }
-            if 'license' in metadata:
-                mb.source['defaultarticlelicense'] = metadata['license']
-        
-        if options.noimages:
-            w['images'] = None
-        else:
-            if options.imagesize:
-                imagesize = int(options.imagesize)
-            else:
-                imagesize = 800
-        
-        if output:
-            zipfilename = output
-        else:
-            fd, zipfilename = tempfile.mkstemp()
+        options.imagesize = int(options.imagesize)
+        assert options.imagesize > 0
+    except (ValueError, AssertionError):
+        parser.error('Argument for --imagesize must be an integer > 0.')
+    
+    import os
+    import tempfile
+    import zipfile
+    
+    if options.posturl:
+        from mwlib.podclient import PODClient
+        podclient = PODClient(options.posturl)
+    elif options.getposturl:
+        import webbrowser
+        from mwlib.podclient import podclient_from_serviceurl
+        podclient = podclient_from_serviceurl('http://pediapress.com/api/collections/')
+        webbrowser.open(podclient.redirecturl)
+    else:
+        podclient = None
+    
+    delete_files = []
+    
+    if options.daemonize:
+        from mwlib.utils import daemonize
+        if options.metabook:
+            import shutil
+            fd, tmp = tempfile.mkstemp()
             os.close(fd)
+            shutil.copyfile(options.metabook, tmp)
+            options.metabook = tmp
+            delete_files.append(tmp)
+        daemonize()
+    
+    def set_status(status):
+        print 'Status: %s' % status
+        if podclient is not None:
+            podclient.post_status(status)
         
-        if options.collectionpage:
-            mwcollection = w['wiki'].getRawArticle(options.collectionpage)
-            mb.loadCollectionPage(mwcollection)
-        elif options.metabook:
-            mb.readJsonFile(options.metabook)
-        
-        # do not daemonize earlier: Collection extension deletes input metabook file!
-        if options.daemonize:
-            daemonize()
-        
-        
-        post_status('init')
-        
-        from mwlib.utils import get_multipart
+    def set_progress(progress):
+        print 'Progress: %d%%' % progress
+        if podclient is not None:
+            podclient.post_progress(progress)
+    
+    def set_current_article(title):
+        print 'Current Article: %r' % title
+        if podclient is not None:
+            podclient.post_current_article(title)
 
+    # try:... except:... finally:... does not work in python 2.4
+    # use atexit instead
+    def cleanup():
+        for path in delete_files:
+            try:
+                os.unlink(path)
+            except Exception, e:
+                print 'Could not delete file %r: %s' % (path, e)
+                
+    import atexit
+    atexit.register(cleanup)
         
-        zf = zipfile.ZipFile(zipfilename, 'w')
-        z = recorddb.ZipfileCreator(zf, w['wiki'], w['images'])
+    try:
+        set_status('init')
         
-        post_status('parsing')
+        from mwlib import recorddb, metabook, mwapidb
         
-        mb.addArticles(articles)
+        env = parser.env
         
-        z.addObject('metabook.json', mb.dumpJson())
-        articles = list(mb.getArticles())
+        if options.output is None:
+            fd, options.output = tempfile.mkstemp()
+            os.close(fd)
+            delete_files.append(options.output)
+        zf = zipfile.ZipFile(options.output, 'w')
+        z = recorddb.ZipfileCreator(zf, imagesize=options.imagesize)
+        
+        set_status('parsing')
+        articles = list(parser.metabook.getArticles())
         if articles:
-            inc = 70./len(articles)
+            inc = 90./len(articles)
         else:
             inc = 0
         p = 0
-        for title, revision in articles:
-            post_progress(p)
-            z.addArticle(title, revision=revision)        
+        for item in articles:
+            set_progress(p)
+            d = mwapidb.parse_article_url(item['title'].encode('utf-8'))
+            if d is not None:
+                item['title'] = d['title']
+                item['revision'] = d['revision']
+                wikidb = mwapidb.WikiDB(api_helper=d['api_helper'])
+                imagedb = mwapidb.ImageDB(api_helper=d['api_helper'])
+            else:
+                wikidb = env.wiki
+                imagedb = env.images
+            set_current_article(item['title'])
+            z.addArticle(item['title'], revision=item.get('revision', None), wikidb=wikidb, imagedb=imagedb)
+            
             p += inc
+        set_progress(90)
         
-        post_progress(70)
+        for license in env.get_licenses():
+            z.parseArticle(
+                title=license['title'],
+                raw=license['wikitext'],
+                wikidb=env.wiki,
+                imagedb=env.images,
+            )
         
-        post_status('packaging')
-        
-        def image_progress(i, n):
-            post_progress(70 + i*(20.0/n))
-        
-        if not options.noimages:
-            z.writeImages(size=imagesize, progress_callback=image_progress)
-        
-        post_progress(90)
+        z.addObject('metabook.json', parser.metabook.dumpJson())
         
         z.writeContent()
         zf.close()
+        set_progress(95)
         
-        post_progress(95)
+        if podclient:
+            podclient.post_zipfile(options.output)
         
-        if posturl:
-            post_status('uploading')
-            zf = open(zipfilename, "rb")
-            ct, data = get_multipart('collection.zip', zf.read(), 'collection')
-            zf.close()
-            print "posting the zip to", posturl, len(data)
-            req = urllib2.Request(posturl, data=data, headers={"Content-Type": ct})
-            result = urllib2.urlopen(req).read()
-            print "posting result was ", result
-
-        if w['images']:
-            w['images'].clear()
+        if env.images:
+            env.images.clear()
         
-        if not output:
-            os.unlink(zipfilename)
-        
-        post_status('finished')
-        post_progress(100)
+        set_status('finished')
+        set_progress(100)
     except Exception, e:
-        post_status('error')
+        set_status('error')
+        raise
+
+def render():
+    from mwlib.options import OptionParser
+    
+    parser = OptionParser(conf_optional=True)
+    parser.add_option("-o", "--output", help="write output to OUTPUT")
+    parser.add_option("-w", "--writer", help='use writer backend WRITER')
+    parser.add_option("-W", "--writer-options", help='";"-separated list of additional writer-specific options')
+    parser.add_option("-e", "--error-file", help='write errors to this file')
+    parser.add_option("-s", "--status-file", help='write status/progress info to this file')
+    parser.add_option("--list-writers", action='store_true', help='list available writers and exit')
+    parser.add_option("-d", "--daemonize", action="store_true",
+                      help='become a daemon process as soon as possible')
+    options, args = parser.parse_args()
+    
+    import simplejson
+    import sys
+    import traceback
+    import pkg_resources
+    from mwlib.writerbase import WriterError
+    
+    use_help = 'Use --help for usage information.'
+    
+    if options.list_writers:
+        for entry_point in pkg_resources.iter_entry_points('mwlib.writers'):
+            try:
+                writer = entry_point.load()
+                if hasattr(writer, 'description'):
+                    description = writer.description
+                else:
+                    description = '<no description>'
+            except Exception, e:
+                description = '<NOT LOADABLE: %s>' % e
+            print '%s\t%s' % (entry_point.name, description)
+        return
+    
+    if options.output is None:
+        parser.error('Please specify an output file with --output.\n' + use_help)
+    
+    if options.writer is None:
+        parser.error('Please specify a writer with --writer.\n' + use_help)    
+    try:
+        entry_point = pkg_resources.iter_entry_points('mwlib.writers', options.writer).next()
+    except StopIteration:
+        sys.exit('No such writer: %r (use --list-writers to list available writers)' % options.writer)
+    try:
+        writer = entry_point.load()
+    except Exception, e:
+        sys.exit('Could not load writer %r: %s' % (options.writer, e))
+    
+    writer_options = {}
+    if options.writer_options:
+        for wopt in options.writer_options.split(';'):
+            if '=' in wopt:
+                key, value = wopt.split('=', 1)
+                writer_options[key] = value
+            else:
+                writer_options[wopt] = True
+    
+    if options.daemonize:
+        from mwlib.utils import daemonize
+        daemonize()
+    
+    last_status = {}
+    def set_status(status=None, progress=None, article=None):
+        if status is not None:
+            last_status['status'] = status
+            print 'STATUS: %s' % status
+        if progress is not None:
+            assert 0 <= progress and progress <= 100, 'status not in range 0..100'
+            last_status['progress'] = progress
+            print 'PROGRESS: %d%%' % progress
+        if article is not None:
+            last_status['article'] = article
+            print 'ARTICLE: %r' % article
+        if options.status_file:
+            open(options.status_file, 'wb').write(simplejson.dumps(last_status).encode('utf-8'))
+    
+    try:
+        set_status(status='init', progress=0)
+        writer(parser.env, output=options.output, status_callback=set_status, **writer_options)
+        set_status(status='finished', progress=100)
+    except WriterError, e:
+        set_status(status='error')
+        if options.error_file:
+            open(options.error_file, 'wb').write(str(e))
+        raise
+    except Exception, e:
+        set_status(status='error')
+        if options.error_file:
+            traceback.print_exc(file=open(options.error_file, 'wb'))
         raise
     
 
@@ -406,37 +444,3 @@ def html():
         os.close(fd)
         open(htmlfile, "wb").write(out.getvalue().encode('utf-8'))
         webbrowser.open("file://"+htmlfile)
-
-
- 
-def zip2odf():
-    "generates odf from zipfiles"
-    parser = optparse.OptionParser(usage="%prog ZIPFILE OUTPUT")
-    options, args = parser.parse_args()
-    
-    if len(args) < 2:
-        parser.error("specify ZIPFILE and OUTPUT")
-    
-    zipfile = args[0]
-    output = args[1]
-    
-    from mwlib import parser, zipwiki
-    from mwlib import odfwriter
-
-    wikidb = zipwiki.Wiki(zipfile)
-    imagedb = zipwiki.ImageDB(zipfile)
-
-    
-    def buildBook(wikidb):
-        bookParseTree = parser.Book()
-        for item in wikidb.metabook.getItems():
-            if item['type'] == 'chapter':
-                bookParseTree.children.append(parser.Chapter(item['title'].strip()))
-            elif item['type'] == 'article':
-                a = wikidb.getParsedArticle(title=item['title'], revision=item.get('revision'))
-                bookParseTree.children.append(a)
-        return bookParseTree
-
-    r = odfwriter.ODFWriter(images=imagedb)    
-    bookParseTree = buildBook(wikidb)
-    r.writeBook(wikidb.metabook, bookParseTree, output=output)

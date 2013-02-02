@@ -12,6 +12,7 @@ those prefixed with 'x' are unmodofied copies from xhtmlwriter.py
 and deactived.
 
 ToDo:
+ * fix license handling
  * implement missing methods
  * add missing styles
  * use ODF supported special features for
@@ -23,19 +24,23 @@ More Info:
 * http://books.evc-cit.info/odbook/book.html
 * http://opendocumentfellowship.com/projects/odfpy
 """
-import sys, exceptions
+
+import sys
 try:
     import odf
-except exceptions.ImportError, e:
+except ImportError, e:
     print "you need to install odfpy: http://opendocumentfellowship.com/projects/odfpy"
-    raise exceptions.ImportError, e
+    raise
 
 from odf.opendocument import OpenDocumentText
 from odf import text, dc, meta, table, draw, math
-from mwlib import parser,  mathml
+from mwlib import parser
+from mwlib import mathml
 from mwlib.log import Log
 from mwlib import advtree 
 from mwlib import odfstyles as style
+from mwlib import xmltreecleaner
+from mwlib import writerbase
 
 log = Log("odfwriter")
 
@@ -52,10 +57,11 @@ def showNode(obj):
 class ODFWriter(object):
     namedLinkCount = 1
 
-    def __init__(self, language="en", namespace="en.wikipedia.org", creator="", license="GFDL", images=None):
+    def __init__(self, env=None, status_callback=None, language="en", namespace="en.wikipedia.org", creator="", license="GFDL"):
+        self.env = env
+        self.status_callback = status_callback
         self.language = language
         self.namespace = namespace
-        self.images = images
         self.references = []
         self.doc =  OpenDocumentText()
         style.applyStylesToDoc(self.doc)
@@ -71,22 +77,22 @@ class ODFWriter(object):
             self.doc.meta.addElement(meta.UserDefined(name="Rights", text=license))
 
 
-    def writeBook(self, book, bookParseTree, output, removedArticlesFile=None, coverimage=None):
-        outfile = output
-        advtree.buildAdvancedTree(bookParseTree)
-        preprocess(bookParseTree)
-        self.book = book
+    def writeBook(self, book, output, removedArticlesFile=None, coverimage=None):
+        """
+        bookParseTree must be advtree and sent through preprocess()
+        """
+        
         self.doc.meta.addElement(dc.Title(text=u"collection title fixme"))
-        self.baseUrl = book.source['url']
-        self.wikiTitle = book.source.get('name')
+        #self.baseUrl = book.source['url']
+        #self.wikiTitle = book.source.get('name')
         # add chapters FIXME
-        for e in bookParseTree.children:
+        for e in book.children:
             r = self.write(e, self.doc.text)
-        licenseArticle = self.book.source.get('defaultarticlelicense','')
+        #licenseArticle = self.env.metabook.source.get('defaultarticlelicense','') # FIXME
         doc = self.getDoc()
         #doc.toXml("%s.odf.xml"%fn)
-        doc.save(outfile, True)
-        print "writing to", outfile
+        doc.save(output, addsuffix=False)
+        print "writing to %r" % (output)
         
     def getDoc(self, debuginfo=""):
         return self.doc
@@ -411,8 +417,6 @@ class ODFWriter(object):
     def owriteLangLink(self, obj):
         obj.children=[]
         pass # we dont want them in the PDF
-    
-
 
     def owriteReference(self, t):
         self.references.append(t)
@@ -441,11 +445,11 @@ class ODFWriter(object):
         # http://code.pediapress.com/hg/mwlib.rl rlwriter.py
         
 
-        if not self.images:
+        if not self.env or not self.env.images:
             return
 
         targetWidth = 400
-        imgPath = self.images.getDiskPath(obj.target, size=targetWidth)
+        imgPath = self.env.images.getDiskPath(obj.target, size=targetWidth)
         print imgPath
         if not imgPath:
             print "NO IMAGE PATH", obj, obj.target
@@ -524,116 +528,50 @@ class ODFWriter(object):
     def xwriteGallery(self, obj):
         pass # FIXME
 
+
+# - func  ---------------------------------------------------
+
+
+def writer(env, output, status_callback):
+    book = writerbase.build_book(env, status_callback=status_callback, progress_range=(10, 60))
+    scb = lambda status, progress :  status_callback is not None and status_callback(status,progress)
+    scb(status='preprocessing', progress=70)
+    for c in book.children:
+        preprocess(c)
+    scb(status='rendering', progress=80)
+    ODFWriter(env, status_callback=scb).writeBook(book, output=output)
+
+writer.description = 'OpenDocument Text'
+
     
 # - helper funcs   r ---------------------------------------------------
 
-
-
-def fixtree(element, parent=None):
-    """
-    the parser uses paragraphs to group anything
-    this is not compatible with xhtml where nesting of 
-    block elements is not allowed.
-    """
-    #blockelements = set("p","pre", "ul", "ol","blockquote", "hr", "dl")
-    # TODO POSTPROCESS 
-    
-    # move section children after the section
-    if isinstance(element, advtree.Section):
-        last = element
-        for c in element.children[1:]:
-            c.moveto(last)
-            last = c
-        element.children = element.children[0:1] # contains the caption
-    else:
-        for c in element:
-            fixtree(c, element)
-
-
-def _fixParagraphs(element):
-    if isinstance(element, advtree.Paragraph) and isinstance(element.previous, advtree.Section) \
-            and element.previous is not element.parent:
-        prev = element.previous
-        parent = element.parent
-        element.moveto(prev.getLastChild())
-        assert element not in parent.children
-        assert element in prev.children
-        assert element.parent is prev
-        return True # changed
-    else:
-        for c in element.children[:]:
-            if _fixParagraphs(c):
-                return True
-
-
-def fixParagraphs(root):
-    while _fixParagraphs(root):
-        print "_run fix paragraphs"
-
-    
-
-def _fixBlockElements(element):
-    """
-    the parser uses paragraphs to group anything
-    this is not compatible with xhtml where nesting of 
-    block elements is not allowed.
-    """
-    blockelements = (advtree.Paragraph, advtree.PreFormatted, advtree.ItemList,advtree.Section, advtree.Table,
-                     advtree.Blockquote, advtree.DefinitionList, advtree.HorizontalRule)
-
-    if isinstance(element, blockelements) and element.parent and isinstance(element.parent, blockelements) \
-            and not isinstance(element.parent, advtree.Section) : # Section is no problem if parent
-        if not element.parent.parent:
-            print "missing parent parent", element, element.parent, element.parent.parent
-            assert element.parent.parent
-        
-        # s[ p, p[il[], text], p] -> s[p, p, il, p[text], p]
-        # split element parents
-        pstart = element.parent.copy()
-        pend = element.parent.copy()
-        for i,c in enumerate(element.parent.children):
-            if c is element:
-                break
-        pstart.children = pstart.children[:i]
-        pend.children = pend.children[i+1:]
-        print "action",  [pstart, element, pend]
-        grandp = element.parent.parent
-        oldparent = element.parent
-        grandp.replaceChild(oldparent, [pstart, element, pend])
-        assert pstart in grandp.children
-        assert element in grandp.children
-        assert pend in grandp.children
-        assert oldparent not in grandp.children
-        assert pstart.parent is grandp
-        assert pend.parent is grandp
-        #assertparents(element.parent.parent)
-        return True # changed
-    else:
-        for c in element.children:
-            if _fixBlockElements(c):
-                return True
-        
-def fixBlockElements(root):
-    while _fixBlockElements(root):
-        print "_run fix block elements"
-
-def assertparents(e, isroot=True):
-    if not isroot:
-        assert e.parent
-    for c in e.children:
-        assertparents(c, isroot=False)
-
-
 def preprocess(root):
-    fixParagraphs(root)
-    fixBlockElements(root)
-    #fixParagraphs(root)
+    advtree.buildAdvancedTree(root)
+    # remove nav boxes
+#    for c in root.getAllChildren():
+#        if c.isNavBox() and c.parent is not None:
+#            c.parent.removeChild(c)
+    xmltreecleaner.removeChildlessNodes(root)
+    xmltreecleaner.fixLists(root)
+    xmltreecleaner.fixParagraphs(root)
+    xmltreecleaner.fixBlockElements(root)
 
+
+
+
+
+# ==============================================================================
 
 def main():
     for fn in sys.argv[1:]:
-        r = advtree.getAdvTree(fn)
+        from mwlib.dummydb import DummyDB
+        from mwlib.uparser import parseString
+        db = DummyDB()
+        input = unicode(open(fn).read(), 'utf8')
+        r = parseString(title=fn, raw=input, wikidb=db)
         parser.show(sys.stdout, r)
+        advtree.buildAdvancedTree(r)
         preprocess(r)
         parser.show(sys.stdout, r)
         odf = ODFWriter()
