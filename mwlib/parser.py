@@ -198,7 +198,7 @@ class Caption(_VListNode):
 
 class Link(Node):
     target = None
-    from mwlib.namespace import NS_MAIN, NS_CATEGORY, NS_IMAGE
+    from mwlib.namespace import NS_MAIN, NS_CATEGORY, NS_FILE
 
     colon = False
 
@@ -214,14 +214,22 @@ class Link(Node):
         (link_class, namespace_value).
         """
         res = {}
-        for name, num in namespaces.iteritems():
+
+        def reg(name, num):
             name = name.lower()
             if num == cls.NS_CATEGORY:
                 res[name] = (CategoryLink, num)
-            elif num == cls.NS_IMAGE:
+            elif num == cls.NS_FILE:
                 res[name] = (ImageLink, num)
             else:
                 res[name] = (NamespaceLink, num)
+
+        for name, num in namespaces.iteritems():
+            if isinstance(name, basestring):
+                reg(name, num)
+            else:
+                for n in name:
+                    reg(n, num)
 
         for name, target in interwikis.iteritems():
             res[name.lower()] = (InterwikiLink, target)
