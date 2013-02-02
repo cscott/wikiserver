@@ -3,7 +3,9 @@
 """WSGI dispatcher base class"""
 
 import cgi
+import os
 import StringIO
+import time
 import traceback
 
 from mwlib.log import Log
@@ -15,7 +17,7 @@ log = Log('mwlib.wsgi')
 # ==============================================================================
 
 class Request(object):
-    max_post_data_size = 10*1024
+    max_post_data_size = 1024*1024
     
     def __init__(self, env):
         self.env = env
@@ -51,12 +53,12 @@ class Request(object):
                 content_length, len(content),
             ))
         
-        sio = StringIO.StringIO(content)
+        
         content_type, pdict = cgi.parse_header(self.env.get('CONTENT_TYPE', ''))
         if content_type == 'multipart/form-data':
-            post_data = cgi.parse_multipart(sio, pdict)
+            post_data = cgi.parse_multipart(StringIO.StringIO(content), pdict)
         else:
-            post_data = cgi.parse(sio)
+            post_data = cgi.parse_qs(content)
         return self.multi2single(post_data)
     
 
@@ -68,7 +70,14 @@ class Response(object):
         self.status_text = status_text
     
     def finish(self):
-        self.headers['Content-Length'] = '%d' % len(self.content)
+        if isinstance(self.content, unicode):
+            self.content = self.content.encode('utf-8')
+        if isinstance(self.content, str):
+            content_length = len(self.content)
+        else:
+            content_length = os.fstat(self.content.fileno()).st_size
+        self.headers['Content-Length'] = '%d' % content_length
+            
 
 
 class Application(object):
@@ -77,6 +86,7 @@ class Application(object):
     """
     
     def __call__(self, env, start_response):
+        start_time = time.time()
         try:
             request = Request(env)
         except Exception, exc:
@@ -86,18 +96,26 @@ class Application(object):
         else:
             try:
                 response = self.dispatch(request)
+                if not isinstance(response, Response):
+                    log.ERROR('invalid result from dispatch(): %r' % response)
+                    response = self.http500()
             except Exception, exc:
-                return self.http500(exc)
-            if not isinstance(response, Response):
-                log.ERROR('invalid result from dispatch(): %r' % response)
-                return self.http500()
-        
+                response = self.http500(exc)
+    
         response.finish()
         start_response(
             '%d %s' % (response.status_code, response.status_text),
             response.headers.items()
         )
-        return response.content
+        if isinstance(response.content, str):
+            yield response.content
+        else:
+            while True:
+                d = response.content.read(0x20000)
+                if not d:
+                    break
+                yield d
+        log.info('request took %f s' % (time.time() - start_time))
     
     def http404(self, path):
         log.not_found(path)

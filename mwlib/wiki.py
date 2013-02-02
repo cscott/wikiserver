@@ -123,6 +123,7 @@ url=
         if name=='wiki':
             return self.wiki
         raise KeyError("Environment.__getitem__ only works for 'wiki' or 'images', not %r" % (name,))
+    
     def __setitem__(self, name, val):
         if name=='images':
             self.images = val
@@ -132,27 +133,27 @@ url=
             raise KeyError("Environment.__setitem__ only works for 'wiki' or 'images', not %r" % (name,))
     
     def get_source(self):
-        if hasattr(self.metabook, 'source'):
-            return self.metabook.source
-        if hasattr(self.wiki, 'getMetaData'):
-            return self.wiki.getMetaData()
+        if 'source' in self.metabook:
+            return self.metabook['source']
+        if hasattr(self.wiki, 'getSource'):
+            return self.wiki.getSource()
         return metabook.make_source(
             name=self.configparser.get('wiki', 'name'),
             url=self.configparser.get('wiki', 'url'),
         )
     
-    def get_licenses(self, icon_size=400):
+    def get_licenses(self):
         """Return list of licenses
         
-        @returns: list of dicts with license info and list of (imagename, imagesize) tuples
-        @rtype: ([{str: unicode}], [(unicode, int)])
+        @returns: list of dicts with license info
+        @rtype: [dict]
         """
         
-        if not hasattr(self.metabook, 'licenses'):
+        if 'licenses' not in self.metabook:
             return []
         
         licenses = []
-        for license in self.metabook.licenses:
+        for license in self.metabook['licenses']:
             wikitext = ''
             
             if license.get('mw_license_url'):
@@ -182,13 +183,13 @@ url=
                 'title': license.get('name', u'License'),
                 'wikitext': wikitext,
             })
+        
         return licenses
     
 
 def _makewiki(conf, metabook=None):
     res = Environment(metabook)
     
-
     url = None
     if conf.startswith(':'):
         url = wpwikis.get(conf[1:])

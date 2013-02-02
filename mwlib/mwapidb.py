@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import urllib
 import urllib2
 import urlparse
@@ -161,7 +162,7 @@ class APIHelper(object):
         })
         self.opener.open('%sapi.php' % self.base_url, post_data)
     
-    def query(self, ignore_errors=False, **kwargs):
+    def query(self, ignore_errors=True, **kwargs):
         args = {
             'action': 'query',
             'format': 'json',
@@ -188,15 +189,20 @@ class APIHelper(object):
                 return None
             raise RuntimeError('api.php query failed. Are you sure you specified the correct baseurl?')
     
-    def page_query(self, **kwargs):
-        q = self.query(**kwargs)
-        if q is None:
-            return None
-        try:
-            page = q['pages'].values()[0]
-        except (KeyError, IndexError):
-            return None
-        return page
+    def page_query(self, num_tries=2, **kwargs):
+        for i in range(num_tries):
+            try:
+                q = self.query(**kwargs)
+                if q is not None:
+                    try:
+                        return q['pages'].values()[0]
+                    except (KeyError, IndexError):
+                        return None
+            except:
+                if i == num_tries - 1:
+                    raise
+            time.sleep(0.5)
+        return None
     
 
 # ==============================================================================
@@ -217,7 +223,7 @@ class ImageDB(object):
             self.api_helper = api_helper
         else:
             self.api_helper = APIHelper(base_url)
-            assert self.api_helper is not None, 'invalid base URL %r' % base_url
+            assert self.api_helper.is_usable(), 'invalid base URL %r' % base_url
         
         if username is not None:
             self.login(username, password)
@@ -294,7 +300,7 @@ class ImageDB(object):
         url = self.getURL(name, size=size)
         if url is None:
             return
-        path = urlparse.urlparse(url).path
+        path = urlparse.urlparse(url)[2]
         pos = path.find('/thumb/')
         if pos >= 0:
             return path[pos + 1:]
@@ -321,21 +327,17 @@ class ImageDB(object):
         url = self.getURL(name, size=size)
         if url is None:
             return None
-        
-        data = utils.fetch_url(url, ignore_errors=True)
-        if not data:
-            return None
-        
+
         ext = url.rsplit('.')[-1]
         if size is not None:
             ext = '%dpx.%s' % (size, ext)
         else:
             ext = '.%s' % ext
-        filename = os.path.join(self.tmpdir, utils.fsescape(name + ext))
-        f = open(filename, 'wb')
-        f.write(data)
-        f.close()
-        return filename
+        filename = os.path.join(self.tmpdir, utils.fsescape(name + ext))    
+        if utils.fetch_url(url, ignore_errors=True, output_filename=filename):
+            return filename
+        else:
+            return None
     
     def getLicense(self, name):
         """Return license of image as stated on image description page
@@ -416,6 +418,7 @@ class WikiDB(object):
         self.template_blacklist = []
         if template_blacklist is not None:
             self.setTemplateBlacklist(template_blacklist)
+        self.source = None
     
     def setTemplateBlacklist(self, template_blacklist):
         raw = self.getRawArticle(template_blacklist)
@@ -442,15 +445,18 @@ class WikiDB(object):
         @returns: list of principal authors
         @rtype: [unicode]
         """
-        
-        result = self.api_helper.page_query(
-            titles=title,
-            redirects=1,
-            prop='revisions',
-            rvprop='user|ids|flags|comment',
-            rvlimit=500,
-        )
-        if result is None:
+
+        for rvlimit in (500, 50):
+            result = self.api_helper.page_query(
+                titles=title,
+                redirects=1,
+                prop='revisions',
+                rvprop='user|ids|flags|comment',
+                rvlimit=rvlimit,
+            )
+            if result is not None:
+                break
+        else:
             return None
         
         try:
@@ -498,7 +504,7 @@ class WikiDB(object):
         
         titles = ['Template:%s' % name]
         if self.print_template:
-            titles.append(self.print_template % name)
+            titles.insert(0, self.print_template % name)
         for title in titles:
             log.info("Trying template %r" % (title,))
             c = self.getRawArticle(title)
@@ -525,14 +531,18 @@ class WikiDB(object):
         except KeyError:
             return None
     
-    def getMetaData(self):
+    def getSource(self):
+        if self.source is not None:
+            return self.source
         result = self.api_helper.query(meta='siteinfo')
         try:
             g = result['general']
-            return metabook.make_source(
+            self.source = metabook.make_source(
                 url=g['base'],
                 name='%s (%s)' % (g['sitename'], g['lang']),
+                language=g['lang'],
             )
+            return self.source
         except KeyError:
             return None
     

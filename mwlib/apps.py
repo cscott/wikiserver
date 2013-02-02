@@ -5,6 +5,7 @@
 """main programs - installed via setuptools' entry_points"""
 
 import optparse
+import os
 
 def buildcdb():
     parser = optparse.OptionParser(usage="%prog --input XMLDUMP --output OUTPUT")
@@ -22,7 +23,6 @@ def buildcdb():
     if not (input and output):
         parser.error("missing argument.")
         
-    import os
     from mwlib import cdbwiki
 
     cdbwiki.BuildWiki(input, output)()
@@ -39,7 +39,7 @@ localpath = ~/images
 
 def show():
     parser = optparse.OptionParser()
-    parser.add_option("-c", "--conf", help="config file")
+    parser.add_option("-c", "--config", help="configuration file/URL/shortcut")
     parser.add_option("-e", "--expand", action="store_true", help="expand templates")
     parser.add_option("-t", "--template", action="store_true", help="show template")
     parser.add_option("-f", help='read input from file. implies -e')
@@ -51,9 +51,9 @@ def show():
         
     articles = [unicode(x, 'utf-8') for x in args]
 
-    conf = options.conf
+    conf = options.config
     if not conf:
-        parser.error("missing --conf argument")
+        parser.error("missing --config argument")
 
     from mwlib import wiki, expander
     
@@ -84,36 +84,16 @@ def buildzip():
     parser.add_option("-o", "--output", help="write output to OUTPUT")
     parser.add_option("-p", "--posturl", help="http post to POSTURL (directly)")
     parser.add_option("-g", "--getposturl",
-                      help='get POST URL from PediaPress.com and open upload page in webbrowser',
-                      action='store_true')
-    parser.add_option("-i", "--imagesize",
-                      help="max. pixel size (width or height) for images (default: 800)",
-                      default=800)
-    parser.add_option("-d", "--daemonize", action="store_true",
-                      help='become a daemon process as soon as possible')
-    parser.add_option('--pid-file',
-        help='write PID of daemonized process to this file',
+        help='get POST URL from PediaPress.com, open upload page in webbrowser',
+        action='store_true',
     )
     options, args = parser.parse_args()
     
     use_help = 'Use --help for usage information.'
     if options.posturl and options.getposturl:
-        parser.error('Please specify either --posturl or --getposturl, not both.\n' + use_help)
+        parser.error('Specify either --posturl or --getposturl.\n' + use_help)
     if not options.posturl and not options.getposturl and not options.output:
-        parser.error('Neither --output, nor --posturl or --getposturl specified. This would result in a no-op...')
-    
-    try:
-        options.imagesize = int(options.imagesize)
-        assert options.imagesize > 0
-    except (ValueError, AssertionError):
-        parser.error('Argument for --imagesize must be an integer > 0.')
-    
-    import os
-    import simplejson
-    import tempfile
-    import zipfile
-    from mwlib import metabook
-    
+        parser.error('Neither --output, nor --posturl or --getposturl specified.\n' + use_help)
     if options.posturl:
         from mwlib.podclient import PODClient
         podclient = PODClient(options.posturl)
@@ -125,11 +105,11 @@ def buildzip():
     else:
         podclient = None
     
-    delete_files = []
-    
     if options.daemonize:
         from mwlib.utils import daemonize
-        daemonize(pid_file=options.pid_file)
+        daemonize()
+    if options.pid_file:
+        open(options.pid_file, 'wb').write('%d\n' % os.getpid())
     
     def set_status(status):
         print 'Status: %s' % status
@@ -139,86 +119,102 @@ def buildzip():
     def set_progress(progress):
         print 'Progress: %d%%' % progress
         if podclient is not None:
-            podclient.post_progress(progress)
+            podclient.post_progress(int(progress))
     
     def set_current_article(title):
         print 'Current Article: %r' % title
         if podclient is not None:
             podclient.post_current_article(title)
 
-    # try:... except:... finally:... does not work in python 2.4
-    # use atexit instead
-    def cleanup():
-        for path in delete_files:
-            try:
-                os.unlink(path)
-            except Exception, e:
-                print 'Could not delete file %r: %s' % (path, e)
-                
-    import atexit
-    atexit.register(cleanup)
-        
     try:
-        set_status('init')
-        
-        from mwlib import recorddb, mwapidb
-        
-        env = parser.env
-        
-        if options.output is None:
-            fd, options.output = tempfile.mkstemp()
-            os.close(fd)
-            delete_files.append(options.output)
-        zf = zipfile.ZipFile(options.output, 'w')
-        z = recorddb.ZipfileCreator(zf, imagesize=options.imagesize)
+        from mwlib import recorddb
         
         set_status('parsing')
-        articles = metabook.get_item_list(parser.metabook, filter_type='article')
-        if articles:
-            inc = 90./len(articles)
-        else:
-            inc = 0
-        p = 0
-        for item in articles:
-            set_progress(p)
-            d = mwapidb.parse_article_url(item['title'].encode('utf-8'))
-            if d is not None:
-                item['title'] = d['title']
-                item['revision'] = d['revision']
-                wikidb = mwapidb.WikiDB(api_helper=d['api_helper'])
-                imagedb = mwapidb.ImageDB(api_helper=d['api_helper'])
-            else:
-                wikidb = env.wiki
-                imagedb = env.images
-            set_current_article(item['title'])
-            z.addArticle(item['title'], revision=item.get('revision', None), wikidb=wikidb, imagedb=imagedb)
-            
-            p += inc
-        set_progress(90)
+        set_progress(0)
         
-        for license in env.get_licenses():
-            z.parseArticle(
-                title=license['title'],
-                raw=license['wikitext'],
-                wikidb=env.wiki,
-                imagedb=env.images,
-            )
-        
-        if 'source' not in parser.metabook:
-            parser.metabook['source'] = parser.env.get_source()
-        
-        z.addObject('metabook.json', simplejson.dumps(parser.metabook))
-        
-        z.writeContent()
-        zf.close()
-        set_progress(95)
+        filename = recorddb.make_zip_file(options.output, parser.env,
+            set_progress=lambda p: set_progress(p*0.9),
+            set_current_article=set_current_article,
+            num_article_threads=options.num_article_threads,
+            num_image_threads=options.num_image_threads,
+            imagesize=options.imagesize,
+        )
         
         if podclient:
-            podclient.post_zipfile(options.output)
+            set_status('uploading')
+            podclient.post_zipfile(filename)
         
-        if env.images:
-            env.images.clear()
+        if options.output is None:
+            try:
+                os.unlink(filename)
+            except Exception, e:
+                print 'Could not delete file %r: %s' % (filename, e)
         
+        set_status('finished')
+        set_progress(100)
+    except Exception, e:
+        set_status('error')
+        raise
+
+def post():
+    parser = optparse.OptionParser(usage="%prog OPTIONS")
+    parser.add_option("-i", "--input", help="ZIP file to POST")
+    parser.add_option('-l', '--logfile',
+        help='log output to LOGFILE',
+    )
+    parser.add_option("-p", "--posturl", help="HTTP POST ZIP file to POSTURL")
+    parser.add_option("-g", "--getposturl",
+        help='get POST URL from PediaPress.com, open upload page in webbrowser',
+        action='store_true',
+    )
+    parser.add_option("-d", "--daemonize", action="store_true",
+        help='become a daemon process as soon as possible')
+    parser.add_option('--pid-file',
+        help='write PID of daemonized process to this file',
+    )
+    options, args = parser.parse_args()
+    
+    use_help = 'Use --help for usage information.'
+    if not options.input:
+        parser.error('Specify --input.\n' + use_help)
+    if (options.posturl and options.getposturl)\
+        or (not options.posturl and not options.getposturl):
+        parser.error('Specify either --posturl or --getposturl.\n' + use_help)
+    if options.posturl:
+        from mwlib.podclient import PODClient
+        podclient = PODClient(options.posturl)
+    elif options.getposturl:
+        import webbrowser
+        from mwlib.podclient import podclient_from_serviceurl
+        podclient = podclient_from_serviceurl('http://pediapress.com/api/collections/')
+        webbrowser.open(podclient.redirecturl)
+    
+    from mwlib import utils
+    
+    if options.logfile:
+        utils.start_logging(options.logfile)
+    
+    if options.daemonize:
+        utils.daemonize()
+    if options.pid_file:
+        open(options.pid_file, 'wb').write('%d\n' % os.getpid())
+    
+    def set_status(status):
+        print 'Status: %s' % status
+        podclient.post_status(status)
+        
+    def set_progress(progress):
+        print 'Progress: %d%%' % progress
+        podclient.post_progress(int(progress))
+    
+    def set_current_article(title):
+        print 'Current Article: %r' % title
+        podclient.post_current_article(title)
+    
+    try:
+        set_progress(0)
+        set_status('uploading')
+        podclient.post_zipfile(options.input)
         set_status('finished')
         set_progress(100)
     except Exception, e:
@@ -228,7 +224,7 @@ def buildzip():
 def render():
     from mwlib.options import OptionParser
     
-    parser = OptionParser(conf_optional=True)
+    parser = OptionParser(config_optional=True)
     parser.add_option("-o", "--output", help="write output to OUTPUT")
     parser.add_option("-w", "--writer", help='use writer backend WRITER')
     parser.add_option("-W", "--writer-options",
@@ -246,19 +242,18 @@ def render():
         help='list information about given WRITER and exit',
         metavar='WRITER',
     )
-    parser.add_option("-d", "--daemonize", action="store_true",
-                      help='become a daemon process as soon as possible')
-    parser.add_option('--pid-file',
-        help='write PID of daemonized process to this file',
+    parser.add_option('--keep-zip',
+        help='write ZIP file to FILENAME',
+        metavar='FILENAME',
     )
     options, args = parser.parse_args()
     
-    import os
     import simplejson
     import sys
     import traceback
     import pkg_resources
     from mwlib.writerbase import WriterError
+    from mwlib import recorddb, zipwiki
     
     use_help = 'Use --help for usage information.'
     
@@ -303,10 +298,14 @@ def render():
                     print ' %s:\t%s' % (name, info['help'])
         return
     
+    if options.config is None:
+        parser.error('Please specify --config.\n' + use_help)
     
     if options.output is None:
         parser.error('Please specify an output file with --output.\n' + use_help)
-    
+    else:
+        options.output = os.path.abspath(options.output)
+        
     if options.writer is None:
         parser.error('Please specify a writer with --writer.\n' + use_help)    
     
@@ -322,7 +321,9 @@ def render():
     
     if options.daemonize:
         from mwlib.utils import daemonize
-        daemonize(pid_file=pid_file)
+        daemonize()
+    if options.pid_file:
+        open(options.pid_file, 'wb').write('%d\n' % os.getpid())
     
     last_status = {}
     def set_status(status=None, progress=None, article=None, content_type=None, file_extension=None):
@@ -344,7 +345,23 @@ def render():
             open(options.status_file, 'wb').write(simplejson.dumps(last_status).encode('utf-8'))
     
     try:
-        set_status(status='init', progress=0)
+        set_status(status='parsing', progress=0)
+        
+        if not isinstance(parser.env.wiki, zipwiki.Wiki)\
+            or not isinstance(parser.env.images, zipwiki.ImageDB):
+            zip_filename = recorddb.make_zip_file(options.keep_zip, parser.env,
+                set_progress=lambda p: set_status(progress=0.7*p),
+                set_current_article=lambda t: set_status(article=t),
+                num_article_threads=options.num_article_threads,
+                num_image_threads=options.num_image_threads,
+                imagesize=options.imagesize,
+            )
+            parser.env.images.clear()
+            parser.env.wiki = zipwiki.Wiki(zip_filename)
+            parser.env.images = zipwiki.ImageDB(zip_filename)
+        else:
+            zip_filename = None
+        
         tmpout = options.output + '.tmp'
         writer(parser.env, output=tmpout, status_callback=set_status, **writer_options)
         os.rename(tmpout, options.output)
@@ -356,6 +373,11 @@ def render():
         if parser.env.images:
             parser.env.images.clear()
         set_status(status='finished', progress=100, **kwargs)
+        if options.keep_zip is None and zip_filename is not None:
+            try:
+                os.unlink(zip_filename)
+            except Exception, e:
+                print 'Could not remove %r: %s' % (zip_filename, e)
     except WriterError, e:
         set_status(status='error')
         if options.error_file:
@@ -369,23 +391,23 @@ def render():
     
 
 def parse():
-    parser = optparse.OptionParser(usage="%prog [-a|--all] --conf CONF [ARTICLE1 ...]")
+    parser = optparse.OptionParser(usage="%prog [-a|--all] --config CONFIG [ARTICLE1 ...]")
     parser.add_option("-a", "--all", action="store_true", help="parse all articles")
     parser.add_option("--tb", action="store_true", help="show traceback on error")
 
-    parser.add_option("-c", "--conf", help="config file")
+    parser.add_option("-c", "--config", help="configuration file/URL/shortcut")
 
     options, args = parser.parse_args()
                                    
     if not args and not options.all:
         parser.error("missing option.")
         
-    if not options.conf:
-        parser.error("missing --conf argument")
+    if not options.config:
+        parser.error("missing --config argument")
 
     articles = [unicode(x, 'utf-8') for x in args]
 
-    conf = options.conf
+    conf = options.config
     
     import traceback
     from mwlib import wiki, uparser
@@ -481,6 +503,14 @@ def serve():
         help='logfile for mw-zip',
         default='/var/log/mw-zip.log',
     )
+    parser.add_option('--mwpost',
+        help='(path to) mw-post executable',
+        default='mw-post',
+    )
+    parser.add_option('--mwpost-logfile',
+        help='logfile for mw-post',
+        default='/var/log/mw-post.log',
+    )
     parser.add_option('-q', '--queue-dir',
         help='queue dir of mw-watch (if not specified, no queue is used)',
     )
@@ -551,7 +581,9 @@ def serve():
         utils.start_logging(options.logfile)
     
     if options.daemonize:
-        utils.daemonize(pid_file=options.pid_file)
+        utils.daemonize()
+    if options.pid_file:
+        open(options.pid_file, 'wb').write('%d\n' % os.getpid())
     
     if options.method == 'threaded':
         options.protocol += '_threaded'
@@ -572,6 +604,8 @@ def serve():
         mwrender_logfile=options.mwrender_logfile,
         mwzip_cmd=options.mwzip,
         mwzip_logfile=options.mwzip_logfile,
+        mwpost_cmd=options.mwpost,
+        mwpost_logfile=options.mwpost_logfile,
         queue_dir=options.queue_dir,
     )
     if options.protocol.startswith('http'):
@@ -630,7 +664,9 @@ def watch():
         utils.start_logging(options.logfile)
     
     if options.daemonize:
-        utils.daemonize(pid_file=options.pid_file)
+        utils.daemonize()
+    if options.pid_file:
+        open(options.pid_file, 'wb').write('%d\n' % os.getpid())
     
     poller = filequeue.FileJobPoller(
         queue_dir=options.queue_dir,
@@ -639,15 +675,15 @@ def watch():
     ).run_forever()
 
 def testserve():
-    parser = optparse.OptionParser(usage="%prog --conf CONF ARTICLE [...]")
-    parser.add_option("-c", "--conf", help="config file")
+    parser = optparse.OptionParser(usage="%prog --config CONFIG ARTICLE [...]")
+    parser.add_option("-c", "--config", help="configuration file/URL/shortcut")
 
     options, args = parser.parse_args()
     
 
-    conf = options.conf
-    if not options.conf:
-        parser.error("missing --conf argument")
+    conf = options.config
+    if not conf:
+        parser.error("missing --config argument")
     
     from mwlib import wiki, web
     
@@ -668,8 +704,8 @@ def testserve():
 
     
 def html():
-    parser = optparse.OptionParser(usage="%prog --conf CONF ARTICLE [...]")
-    parser.add_option("-c", "--conf", help="config file")
+    parser = optparse.OptionParser(usage="%prog --config CONFIG ARTICLE [...]")
+    parser.add_option("-c", "--config", help="configuration file/URL/shortcut")
 
     options, args = parser.parse_args()
     
@@ -678,13 +714,12 @@ def html():
         
     articles = [unicode(x, 'utf-8') for x in args]
 
-    conf = options.conf
-    if not options.conf:
-        parser.error("missing --conf argument")
+    conf = options.config
+    if not conf:
+        parser.error("missing --config argument")
     
     import StringIO
     import tempfile
-    import os
     import webbrowser
     from mwlib import wiki, uparser, htmlwriter
     

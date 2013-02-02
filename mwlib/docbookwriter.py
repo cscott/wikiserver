@@ -10,6 +10,10 @@ Currently this is just a proof of concept which is very incomplete
 see also: 
 http://docutils.sourceforge.net/sandbox/oliverr/docbook/docbook.py
 http://www.docbook.org/tdg5/en/html/ch02.html
+
+basic convertion to other formats using jade works:
+docbook2pdf -l /usr/share/sgml/declaration/xml.dcl -e no-valid  t.xml  
+
 """
 
 import sys
@@ -36,6 +40,18 @@ version = "0.1"
 
 log = Log("docbookwriter")
 
+
+# fix iselement in ET
+def _iselement(element):
+    # FIXME: not sure about this; might be a better idea to look
+    # for tag/attrib/text attributes
+    if None in element.attrib.values():
+        raise TypeError("None not allowed in %r %r" %(element, element.attrib)) # enforce valid values for attributes
+    return isinstance(element, ET._ElementInterface) or hasattr(element, "tag")
+ET.iselement = _iselement
+
+
+
 class SkipChildren(object):
     "if returned by the writer no children are processed"
     def __init__(self, element=None):
@@ -43,6 +59,7 @@ class SkipChildren(object):
 
 
 class DocBookWriter(object):
+    ignoreUnknownNodes = True
     namedLinkCount = 1
     # stylesheet which uses the mozilla Extensible Binding Language
     # http://www.informatik.fh-wiesbaden.de/~werntges/home_t/proj/dbkcss102/wysiwygdocbook.xml
@@ -68,7 +85,7 @@ class DocBookWriter(object):
         return self.header % (self.documenttype, self.css)
         
     def getTree(self, debuginfo=""):
-        indent(self.root) # breaks XHTML (proper rendering at least) if activated!
+        indent(self.root) 
         if self.debug:
             r = validate(self.header + ET.tostring(self.root))
             if r:
@@ -109,7 +126,6 @@ class DocBookWriter(object):
         out = StringIO.StringIO()
         parser.show(out, tree)
         self.root.append(ET.Comment(out.getvalue().replace("--", " - - ")))
-        
 
     def write(self, obj, parent=None):
         """
@@ -128,11 +144,14 @@ class DocBookWriter(object):
             
             if m: # find handler
                 e = m(obj)
-            else:
+            elif self.ignoreUnknownNodes:
                 self.writedebug(obj, parent, "was skipped")
                 log("SKIPPED")
                 showNode(obj)
                 e = None
+            else:
+                raise Exception("unknown node:%r" % obj)
+            
 
             if isinstance(e, SkipChildren): # do not process children of this node
                 return e.element
@@ -172,6 +191,15 @@ class DocBookWriter(object):
             t = ET.SubElement(h, "title")
             t.text = self.environment.metabook['title']
         return e
+
+    def dbwriteNode(self, obj):
+        pass
+
+    def dbwriteBreakingReturn(self, obj):
+        e = ET.Element("literallayout")
+        e.text = "\n"
+        return e
+        
 
 
     def dbwriteChapter(self, obj):
@@ -260,7 +288,7 @@ class DocBookWriter(object):
         p.writeto = ET.SubElement(p, "term")
         return p
 
-    def dbwriteDefinitionDefinition(self, obj):
+    def dbwriteDefinitionDescription(self, obj):
         p = ET.Element("listitem") # FIXME
         p.writeto = ET.SubElement(p, "para")
         return p
@@ -317,6 +345,9 @@ class DocBookWriter(object):
 
 
     def dbwriteImageLink(self, obj): 
+        if not obj.target:
+            return 
+
         if obj.isInline():
             e = ET.Element("inlinemediaobject")
         else:
@@ -326,19 +357,23 @@ class DocBookWriter(object):
         t = ET.SubElement(e, "imageobject")
         e.writeto = ET.SubElement(ET.SubElement(e, "caption"), "para")
 
-        # use a resolver which redirects to the real image
-        # e.g. "http://anyhost/redir?img=IMAGENAME"
+        imgsrc = None
         if self.imagesrcresolver:
+            # use a resolver which redirects to the real image
+            # e.g. "http://anyhost/redir?img=IMAGENAME"
             imgsrc = self.imagesrcresolver.replace("IMAGENAME", obj.target)
         elif self.environment and self.environment.images:
             imgsrc = self.environment.images.getURL(obj.target, obj.width or None)
-        else:
+
+        if imgsrc is None:
             imgsrc = obj.target
 
-        img = ET.SubElement(t, "imagedata", fileref=imgsrc)
+        img = ET.SubElement(t, "imagedata", fileref=imgsrc, scalefit="1")
         if obj.width:
+            img.set("contentwidth", "%dpx" % obj.width)
             img.set("width", "%dpx" % obj.width)
         if obj.height:
+            img.set("contentdepth", "%dpx" % obj.height)
             img.set("depth", "%dpx" % obj.height)
 
         return e 
@@ -348,12 +383,19 @@ class DocBookWriter(object):
     # Links ---------------------------------------------------------
 
     def dbwriteLink(self, obj): 
+        print "dbwritelink", obj
         a = ET.Element("ulink")
         if obj.target:
             a.set("url", obj.target)
         if not obj.children:
             a.text = obj.target
         return a
+
+    dbwriteArticleLink = dbwriteLink 
+    dbwriteLangLink = dbwriteLink # FIXME
+    dbwriteNamespaceLink = dbwriteLink# FIXME
+    dbwriteInterwikiLink = dbwriteLink# FIXME
+    dbwriteSpecialLink = dbwriteLink# FIXME
 
     def dbwriteURL(self, obj):
         a = ET.Element("ulink", url=obj.caption)
@@ -414,11 +456,11 @@ class DocBookWriter(object):
     def dbwriteReference(self, t): # FIXME USE DOCBOOK FEATURES (needs parser support)
         self.references.append(t)
         t =  ET.Element("superscript")
-        t.text = unicode( len(self.references))
+        t.text = u"[%d]" %  len(self.references)
 #        self.references.append(t)
 #       t =  ET.Element("citation")
 #        ET.SubElement("xref", linked="ref-%d" % len(self.references), endterm="%d" % len(self.references))
-        return SkipChildren()
+        return SkipChildren(t)
 
     def dbwriteReferenceList(self, t): # FIXME USE DOCBOOK FEATURES
         if not self.references:
@@ -522,7 +564,8 @@ def writer(env, output, status_callback):
     DocBookWriter(env, status_callback=scb, documenttype="book").writeBook(book, output=output)
 
 writer.description = 'DocBook XML'
-
+writer.content_type = 'text/xml'
+writer.file_extension = 'xml'
 
 
 def main():

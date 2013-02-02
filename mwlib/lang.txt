@@ -64,6 +64,7 @@ es
 et
 eu
 eve
+ext
 fa
 ff
 fi
@@ -75,6 +76,7 @@ frp
 fur
 fy
 ga
+gan
 gd
 gl
 glk
@@ -136,6 +138,7 @@ lo
 lt
 lv
 map-bms
+mdf
 mg
 mh
 mi
@@ -147,6 +150,7 @@ mr
 ms
 mt
 my
+myv
 mzn
 na
 nah
@@ -209,6 +213,7 @@ sq
 sr
 ss
 st
+stq
 su
 sv
 sw

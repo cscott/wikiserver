@@ -36,6 +36,9 @@ class Wiki(object):
             pass
         return None
     
+    def getSource(self):
+        return self.metabook.get('source')
+    
     def getRawArticle(self, title, revision=None):
         article = self._getArticle(title, revision=revision)
         if article:
@@ -46,8 +49,11 @@ class Wiki(object):
         raw = self.getRawArticle(title, revision=revision)
         if raw is None:
             return None
-        a = uparser.parseString(title=title, raw=raw, wikidb=self)
-        return a
+        article = self._getArticle(title, revision=revision)
+        lang = None
+        if 'source' in article:
+            lang = article['source'].get('language')
+        return uparser.parseString(title=title, raw=raw, wikidb=self, lang=lang)
     
     def getURL(self, title, revision=None):
         article = self._getArticle(title, revision=revision)
@@ -98,7 +104,7 @@ class ImageDB(object):
         url = self.getURL(name, size=size)
         if url is None:
             return
-        path = urlparse.urlparse(url).path
+        path = urlparse.urlparse(url)[2]
         pos = path.find('/thumb/')
         if pos >= 0:
             return path[pos + 1:]
@@ -141,7 +147,7 @@ class ImageDB(object):
     def getPath(self):
         raise NotImplemented('getPath() does not work with zipwiki.ImageDB!')
     
-    def getURL(self, name):
+    def getURL(self, name, size=None):
         try:
             return self.images[name]['url']
         except KeyError:
@@ -181,6 +187,9 @@ class FakeImageDB(ImageDB):
     
     def getURL(self, name):
         raise NotImplemented('getURL() does not work with zipwiki.FakeImageDB!')
+    
+    def getDescriptionURL(self, name):
+        raise NotImplemented('getDescriptionURL() does not work with zipwiki.FakeImageDB!')
     
     def getLicense(self, name):
         raise NotImplemented('getLicense() does not work with zipwiki.FakeImageDB!')

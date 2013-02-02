@@ -8,6 +8,7 @@ from mwlib import advtree
 from mwlib.advtree import Paragraph, PreFormatted, ItemList, Div, Reference, Cite, Item, Article, Section
 from mwlib.advtree import Text, Cell, Link, Math, URL, BreakingReturn, HorizontalRule, CategoryLink
 from mwlib.advtree import SpecialLink, ImageLink, ReferenceList, Chapter, NamedURL, LangLink, Table
+from mwlib.advtree import ArticleLink, InterwikiLink, NamespaceLink
                
 def fixLists(node): 
     """
@@ -22,7 +23,7 @@ def fixLists(node):
 
 
 childlessOK = [Text, Cell, Link, Math, URL, BreakingReturn, HorizontalRule, CategoryLink, LangLink,
-               SpecialLink, ImageLink, ReferenceList, Chapter, NamedURL]
+               SpecialLink, ImageLink, ReferenceList, Chapter, NamedURL, ArticleLink, NamespaceLink, InterwikiLink]
 
 def removeChildlessNodes(node):
     """
@@ -79,7 +80,8 @@ def _fixParagraphs(element):
 
 def fixParagraphs(root):
     while _fixParagraphs(root):
-        print "_run fix paragraphs"
+        #print "_run fix paragraphs"
+        pass
 
     
 
@@ -89,14 +91,30 @@ def _fixBlockElements(element):
     the parser uses paragraphs to group anything
     this is not compatible with xhtml where nesting of 
     block elements is not allowed.
+
+    this code splits the parent blocknode and puts the blocknode-child on the same level
+
+    bn_1
+     nbn_2
+     bn_3
+     nbn_4
+
+    becomes:
+    bn_1.1
+     nbn_2
+    bn_3
+    bn_1.2
+     nbn_4
+    
+
     """
     blockelements = (advtree.Paragraph, advtree.PreFormatted, advtree.ItemList,advtree.Section, advtree.Table,
-                     advtree.Blockquote, advtree.DefinitionList, advtree.HorizontalRule)
+                     advtree.Blockquote, advtree.DefinitionList, advtree.HorizontalRule, advtree.Source)
 
     if isinstance(element, blockelements) and element.parent and isinstance(element.parent, blockelements) \
             and not isinstance(element.parent, advtree.Section) : # Section is no problem if parent
         if not element.parent.parent:
-            print "missing parent parent", element, element.parent, element.parent.parent
+            #print "missing parent parent", element, element.parent, element.parent.parent
             assert element.parent.parent
         
         # s[ p, p[il[], text], p] -> s[p, p, il, p[text], p]
@@ -108,7 +126,7 @@ def _fixBlockElements(element):
                 break
         pstart.children = pstart.children[:i]
         pend.children = pend.children[i+1:]
-        print "action",  [pstart, element, pend]
+        #print "action",  [pstart, element, pend]
         grandp = element.parent.parent
         oldparent = element.parent
         grandp.replaceChild(oldparent, [pstart, element, pend])
@@ -120,6 +138,7 @@ def _fixBlockElements(element):
         
 def fixBlockElements(root):
     while _fixBlockElements(root):
-        print "_run fix block elements"
+        #print "_run fix block elements"
+        pass
         
                 

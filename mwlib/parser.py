@@ -9,6 +9,8 @@ import re
 
 from mwlib.scanner import tokenize, TagToken, EndTagToken
 from mwlib.log import Log
+from mwlib.namespace import namespace_maps, interwiki_map
+from mwlib.lang import languages
 
 log = Log("parser")
 
@@ -39,13 +41,16 @@ FirstParagraph = TokenSet(['SPECIAL', 'URL', 'TEXT', 'TIMELINE', '[[', 'STYLE', 
                            TagToken])
 
     
-def show(out, node, indent=0):
-    print >>out, "    "*indent, node
+def show(out, node, indent=0, verbose=False):
+    if verbose:
+        print >>out, "    "*indent, node, repr(getattr(node, 'vlist', ''))
+    else:
+        print >>out, "    "*indent, node
     for x in node:
-        show(out, x, indent+1)
+        show(out, x, indent+1, verbose=verbose)
 
 
-paramrx = re.compile("(?P<name>\w+) *= *(?P<value>(?:(?:\".*?\")|(?:(?:\w|[%:])+)))")
+paramrx = re.compile("(?P<name>\w+) *= *(?P<value>(?:(?:\".*?\")|(?:\'.*?\')|(?:(?:\w|[%:])+)))")
 def parseParams(s):
     def style2dict(s):
         res = {}
@@ -66,7 +71,7 @@ def parseParams(s):
     
     r = {}
     for name, value in paramrx.findall(s):
-        if value.startswith('"'):
+        if value.startswith('"') or value.startswith("'"):
             value = value[1:-1]
             
         if name=='style':
@@ -193,99 +198,165 @@ class Caption(_VListNode):
 
 class Link(Node):
     target = None
-    
-    specialPrefixes = set([
-        # English
-        "wikipedia", "wiktionary", "wikibooks", "wikisource", "wikiquote", "meta", "talk",
-        "commons", "wikinews", "template", "wikitravel", "help",
-        # German
-        "vorlage",
-        # Spanish
-    ])
-    
-    imageKeywords = set([
-        "image", "imagen", "bild", "archivo", "rikcha", "plik", "fichier", "file",
-        u"ta'ãnga", "ficheiro"
-    ])
-    
-    categoryKeywords = set([
-        "category", "kategorie", "categor\\xeda", u"\\xf1emohenda"
-    ])
-    
-    from mwlib.lang import languages
+    from mwlib.namespace import NS_MAIN, NS_CATEGORY, NS_IMAGE
+
     colon = False
 
     def hasContent(self):
         if self.target:
             return True
         return False
+
+    @classmethod
+    def _buildSpecializeMap(cls, namespaces, interwikis, langs):
+        """
+        Returns a dict mapping namespace prefixes to a tuple of form
+        (link_class, namespace_value).
+        """
+        res = {}
+        for name, num in namespaces.iteritems():
+            name = name.lower()
+            if num == cls.NS_CATEGORY:
+                res[name] = (CategoryLink, num)
+            elif num == cls.NS_IMAGE:
+                res[name] = (ImageLink, num)
+            else:
+                res[name] = (NamespaceLink, num)
+
+        for name, target in interwikis.iteritems():
+            res[name.lower()] = (InterwikiLink, target)
         
+        for lang in langs:
+            res[lang.lower()] = (LangLink, lang)
+
+        return res
+        
+    @classmethod
+    def _setSpecializeMap(cls, nsMap='default'):
+        cls._specializeMap = cls._buildSpecializeMap(
+            namespace_maps[nsMap], interwiki_map, languages)
+
     def _specialize(self):
+        """
+        Handles different forms of link, e.g.:
+            - [[Foo]]
+            - [[Foo|Bar]]
+            - [[Category:Foo]]
+            - [[:Category:Foo]]
+        """
+
         if not self.children:
             return
 
         if type(self.children[0]) != Text:
             return
             
-        self.target = target = self.children[0].caption.strip()
+        # Handle [[Foo|Bar]]
+        full_target = self.children[0].caption.strip()
         del self.children[0]
         if self.children and self.children[0] == Control("|"):
             del self.children[0]
-        
-        pic = self.target
-        if pic.startswith(':'):
+
+        # Mark [[:Category:Foo]]. See below
+        if full_target.startswith(':'):
             self.colon = True
-            
+            full_target = full_target[1:]
+        self.full_target = full_target
         
-        
-        # pic == "Bild:Wappen_von_Budenheim.png"
-        
-        pic = pic.strip(': ')
-        if ':' not in pic:
-            return
-            
-        linktype, pic = pic.split(':', 1)
-        linktype = linktype.lower().strip(" :")
-        
-        if linktype in self.categoryKeywords:
-            self.__class__ = CategoryLink
-            self.target = pic.strip()
+        try:
+            ns, title = full_target.split(':', 1)
+        except ValueError:
+            self.namespace = self.NS_MAIN
+            self.target = full_target
+            self.__class__ = ArticleLink
             return
 
-        if linktype in self.specialPrefixes:
-            self.__class__ = SpecialLink
-            self.target = pic.strip()
-            self.ns = linktype            
-
-            return
-
-        if linktype in self.languages:
+        (self.__class__, self.namespace) = (
+                self._specializeMap.get(ns.lower(), (ArticleLink, self.NS_MAIN)))
+        
+        if len(ns) == 2 and not isinstance(self, InterwikiLink):
+            # Assume this is an unlisted language
             self.__class__ = LangLink
+            self.namespace = ns.lower()
+
+        if self.colon and self.namespace != self.NS_MAIN:
+            # [[:Category:Foo]] should not be a category link
+            self.__class__ = NamespaceLink
+
+        if self.namespace == self.NS_MAIN:
+            # e.g. [[Blah: Foo]] is an ordinary article with a colon
+            self.target = full_target
+        else:
+            self.target = title
+
+        if self.__class__ == ImageLink:
+            # Handle images. First ensure they are syntactically sound.
+
+            try:
+                prefix, suffix = title.rsplit('.', 1)
+                if suffix.lower() in ['jpg', 'jpeg', 'gif', 'png', 'svg']:
+                    self._readArgs() # calls Image._readArgs()
+                    return
+            except ValueError:
+                pass
+            # We can't handle this as an image, so default:
+            self.__class__ = NamespaceLink 
+    
+
+    capitalizeTarget = False # Wiki-dependent setting, e.g. Wikipedia => True
+
+    _SPACE_RE = re.compile('[_\s]+')
+    def _normalizeTarget(self):
+        """
+        Normalizes the format of the target with regards to whitespace and
+        capitalization (depending on capitalizeTarget setting).
+        """
+
+        if not self.target:
             return
-            
-        
-        if linktype not in self.imageKeywords:
-            # assume a LangLink
-            log.info("Unknown linktype:", repr(linktype))
-            if len(linktype) in [2, 3]:
-                self.__class__ = LangLink
-            return
-        
-        
-        # pic == "Wappen_von_Budenheim.png"
-        
-        # WTB: See es.wikipedia.org/wiki/Provincia_de_Lima
-        #try:
-        #    prefix, suffix = pic.rsplit('.', 1)
-        #except ValueError:
-        #    return
-        #if suffix.lower() in ['jpg', 'jpeg', 'gif', 'png', 'svg']:
 
-        self.__class__ = ImageLink
-        self.target = pic.strip()
+        # really we should have a urllib.unquote() first, but in practice this
+        # format may be rare enough to ignore
+
+        # [[__init__]] -> [[init]]
+        self.target = self._SPACE_RE.sub(' ', self.target).strip()
+        if self.capitalizeTarget:
+            self.target = self.target[:1].upper() + self.target[1:]
 
 
+# Link forms:
 
+class ArticleLink(Link):
+    pass
+
+class SpecialLink(Link):
+    pass
+
+class NamespaceLink(SpecialLink):
+    pass
+
+class InterwikiLink(SpecialLink):
+    pass
+
+# Non-links with same syntax:
+
+class LangLink(Link):
+    pass
+
+class CategoryLink(Link):
+    pass
+
+class ImageLink(Link):
+    target = None
+    width = None
+    height = None
+    align = ''
+    thumb = False
+    
+    def isInline(self):
+        return not bool(self.align or self.thumb)
+
+    def _readArgs(self):
         idx = 0
         last = []
         
@@ -346,26 +417,8 @@ class Link(Node):
         
         if not self.children:
             self.children = last
-            
-class ImageLink(Link):
-    target = None
-    width = None
-    height = None
-    align = ''
-    thumb = False
-    frame = False
-    
-    def isInline(self):
-        return not bool(self.align or self.thumb or self.frame)
-    
-class LangLink(Link):
-    pass
 
-class CategoryLink(Link):
-    pass
-
-class SpecialLink(Link):
-    pass
+Link._setSpecializeMap('default') # initialise the Link class
 
             
 class Text(Node):
@@ -384,10 +437,10 @@ class Text(Node):
 class Control(Text):
     pass
 
-def _parseAtomFromString(s):
+def _parseAtomFromString(s, lang=None):
     from mwlib import scanner
     tokens = scanner.tokenize(s)
-    p=Parser(tokens)
+    p=Parser(tokens, lang=lang)
     try:
         return p.parseAtom()
     except Exception, err:
@@ -396,10 +449,10 @@ def _parseAtomFromString(s):
 
                   
     
-def parse_fields_in_imagemap(imap):
+def parse_fields_in_imagemap(imap, lang=None):
     
     if imap.image:
-        imap.imagelink = _parseAtomFromString(u'[['+imap.image+']]')
+        imap.imagelink = _parseAtomFromString(u'[['+imap.image+']]', lang=lang)
         if not isinstance(imap.imagelink, ImageLink):
             imap.imagelink = None
 
@@ -416,13 +469,25 @@ def append_br_tag(node):
 _ALPHA_RE = re.compile(r'[^\W\d_]+', re.UNICODE) # Matches alpha strings
             
 class Parser(object):
-    def __init__(self, tokens, name=''):
+    def __init__(self, tokens, name='', lang=None):
         self.tokens = tokens
+        self.lang = lang
         self.pos = 0
         self.name = name
         self.lastpos = 0
         self.count = 0
-
+        
+        if lang:
+            nsMap = '%s+en_mw' % lang
+            if nsMap not in namespace_maps:
+                nsMap = 'default'
+        else:
+            nsMap = 'default'
+        Link._setSpecializeMap(nsMap)
+        
+        from mwlib import tagext
+        self.tagextensions = tagext.default_registry
+        
     @property
     def token(self):
         t=self.tokens[self.pos]
@@ -562,9 +627,8 @@ class Parser(object):
 
         obj._specialize()
 
-        if not obj.children and obj.target:
-            # [[a]] -> [[a|a]]
-            obj.append(Text(obj.target))
+        if not obj.children and obj.target and not isinstance(obj, ImageLink):
+            obj.append(Text(obj.full_target))
 
         if isinstance(obj, ImageLink):
             return obj
@@ -575,13 +639,15 @@ class Parser(object):
                 # [[a|a]]b -> [[a|ab]]
                 obj.append(Text(m.group(0)), True)
                 self.tokens[self.pos] = ('TEXT', self.token[1][m.end():])
+
+        obj._normalizeTarget()
             
         return obj
     
     def parseTag(self):
         token = self.token[0]
         
-        n = TagNode(token.t)
+        n =TagNode(token.t)
         if token.values:
             n.values = token.values
         n.vlist = parseParams(self.token[1])
@@ -688,7 +754,7 @@ class Parser(object):
 
             # either image link or text inside
             # FIXME: Styles and links in text are ignored!
-            n=_parseAtomFromString(u'[['+x+']]')
+            n=_parseAtomFromString(u'[['+x+']]', lang=self.lang)
 
             if isinstance(n, ImageLink):
                 children.append(n)
@@ -1129,6 +1195,11 @@ class Parser(object):
 
     def parseTagToken(self):
         tag = self.token[0].t
+        if tag in self.tagextensions:
+            n = self.parseTag()
+            txt = "".join(x.caption for x in n.find(Text))
+            attributes = n.vlist
+            return self.tagextensions[tag](txt, attributes)
         try:
             m=getattr(self, 'parse'+tag.upper()+'Tag')
         except (AttributeError, UnicodeEncodeError):
@@ -1158,7 +1229,7 @@ class Parser(object):
         token = self.token[0]
         if style is None:
             style = Style(token.t)
-
+        
         b = style        
         end = EndTagToken(token.t)
         start = TagToken(token.t)
@@ -1316,7 +1387,7 @@ class Parser(object):
                 self.next()
 
         return item
-
+        
         
     def _parseHTMLList(self, numbered):
         lst = ItemList()
