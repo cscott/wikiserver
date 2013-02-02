@@ -65,7 +65,10 @@ articles_list = []
 if only_page is not None:
     articles_list = [unicode(only_page)]
 else:
-    articles_reader = FileListReader('%s.pages_selected-level-1' % path)
+    if os.path.exists('%s.pages_selected-level-1' % path):
+        articles_reader = FileListReader('%s.pages_selected-level-1' % path)
+    else:
+        articles_reader = FileListReader('%s.pages_selected' % path)
 
     articles_list = articles_reader.list
     if start_at is not None:
