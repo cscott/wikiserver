@@ -127,6 +127,9 @@ class LinksFilter():
                         redirected = redirects_checker.get_redirected(link)
                         if redirected is not None:
                             link = redirected
+                            if '#' in link:
+                                # use only the article part of the link
+                                link = link[:link.find('#')]
 
                         if not link in self.links and \
                             not link in favorites:
