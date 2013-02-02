@@ -33,8 +33,8 @@ class OptionParser(optparse.OptionParser):
             help="Title of article containing blacklisted templates",
         )
         self.add_option("--login",
-            help='login with given USERNAME and PASSWORD',
-            metavar='USERNAME:PASSWORD',
+            help='login with given USERNAME, PASSWORD and (optionally) DOMAIN',
+            metavar='USERNAME:PASSWORD[:DOMAIN]',
         )
         self.add_option('--no-threads',
             action='store_true',
@@ -59,34 +59,43 @@ class OptionParser(optparse.OptionParser):
     
     def parse_args(self):
         self.options, self.args = optparse.OptionParser.parse_args(self)
+        
         if self.options.logfile:
             start_logging(self.options.logfile)
+        
         if self.options.config is None:
             if not self.config_optional:
                 self.error('Please specify --config option. See --help for all options.')
             return self.options, self.args
+        
         if self.options.metabook:
             self.metabook = simplejson.loads(open(self.options.metabook, 'rb').read())
+        
         if self.options.login is not None and ':' not in self.options.login:
             self.error('Please specify username and password as USERNAME:PASSWORD.')
+        
         try:
             self.options.imagesize = int(self.options.imagesize)
             assert self.options.imagesize > 0
         except (ValueError, AssertionError):
             self.error('Argument for --imagesize must be an integer > 0.')
+        
         try:
             self.options.num_article_threads = int(self.options.num_article_threads)
             assert self.options.num_article_threads >= 0
         except (ValueError, AssertionError):
             self.error('Argument for --num-article-threads must be an integer >= 0.')
+        
         try:
             self.options.num_image_threads = int(self.options.num_image_threads)
             assert self.options.num_image_threads >= 0
         except (ValueError, AssertionError):
             self.error('Argument for --num-image-threads must be an integer >= 0.')
+        
         if self.options.no_threads:
             self.options.num_article_threads = 0
             self.options.num_image_threads = 0
+        
         if self.args:
             if self.metabook is None:
                 self.metabook = metabook.make_metabook()
@@ -94,11 +103,22 @@ class OptionParser(optparse.OptionParser):
                 self.metabook['items'].append(metabook.make_article(
                     title=unicode(title, 'utf-8'),
                 ))
-        self.env = self.makewiki()
+        
         return self.options, self.args
     
     def makewiki(self):
-        env = wiki.makewiki(self.options.config, metabook=self.metabook)
+        username, password, domain = None, None, None
+        if self.options.login:
+            if self.options.login.count(':') == 1:
+                username, password = self.options.login.split(':', 1)
+            else:
+                username, password, domain = self.options.login.split(':', 2)
+        env = wiki.makewiki(self.options.config,
+            metabook=self.metabook,
+            username=username,
+            password=password,
+            domain=domain,
+        )
         if self.options.noimages:
             env.images = None
         if self.options.template_blacklist:
@@ -106,14 +126,6 @@ class OptionParser(optparse.OptionParser):
                 env.wiki.setTemplateBlacklist(self.options.template_blacklist)
             else:
                 log.warn('WikiDB does not support setting a template blacklist')
-        if self.options.login:
-            username, password = self.options.login.split(':', 1)
-            if hasattr(env.wiki, 'login'):
-                env.wiki.login(username, password)
-            else:
-                log.warn('WikiDB does not support logging in')
-            if env.images and hasattr(env.images, 'login'):
-                env.images.login(username, password)
         if self.options.collectionpage:
             wikitext = env.wiki.getRawArticle(self.options.collectionpage)
             if wikitext is None:

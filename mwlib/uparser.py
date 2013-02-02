@@ -6,8 +6,11 @@
 """usable/user parser"""
 
 from mwlib import parser, scanner, expander
+from mwlib.log import Log
 
-def simplify(node):
+log = Log('uparser')
+
+def simplify(node, **kwargs):
     "concatenates textnodes in order to reduce the number of objects"
     Text = parser.Text
     
@@ -27,7 +30,7 @@ def simplify(node):
     for i,ii in enumerate(toremove):
         del node.children[ii-i]
 
-def fixlitags(node):
+def fixlitags(node, **kwargs):
     Text = parser.Text
 
     if not isinstance(node, parser.ItemList):
@@ -52,7 +55,7 @@ def fixlitags(node):
     for x in node.children:
         fixlitags(x)
 
-def removeBoilerplate(node):
+def removeBoilerplate(node, **kwargs):
     i = 0
     while i < len(node.children):
         x = node.children[i]
@@ -70,16 +73,34 @@ def removeBoilerplate(node):
 
     for x in node.children:
         removeBoilerplate(x)
-        
-            
-        
 
-postprocessors = [removeBoilerplate, simplify, fixlitags]
 
-def parseString(title=None, raw=None, wikidb=None, revision=None, lang=None):
+def addurls(node, title=None, revision=None, wikidb=None, **kwargs):
+    """Add 'url' attribute to Link nodes with full HTTP URL to the target"""
+    
+    if wikidb is None or title is None:
+        return
+    if not hasattr(wikidb, 'getLinkURL'):
+        return
+    if isinstance(node, parser.Link) and not isinstance(node, parser.ImageLink):
+        node.url = wikidb.getLinkURL(node, title, revision=revision)
+    for x in node.children:
+        addurls(x, title=title, revision=revision, wikidb=wikidb)
+
+postprocessors = [removeBoilerplate, simplify, fixlitags, addurls]
+
+def parseString(
+    title=None,
+    raw=None,
+    wikidb=None,
+    revision=None,
+    lang=None,
+    interwikimap=None,
+):
     """parse article with title from raw mediawiki text"""
-    assert title is not None 
-
+    
+    assert title is not None, 'no title given'
+    
     if raw is None:
         raw = wikidb.getRawArticle(title, revision=revision)
         assert raw is not None, "cannot get article %r" % (title,)
@@ -87,18 +108,21 @@ def parseString(title=None, raw=None, wikidb=None, revision=None, lang=None):
         te = expander.Expander(raw, pagename=title, wikidb=wikidb)
         input = te.expandTemplates()
         if lang is None and hasattr(wikidb, 'getSource'):
-            src = wikidb.getSource()
+            src = wikidb.getSource(title, revision=revision)
             if src:
                 lang = src.get('language')
+        if interwikimap is None and hasattr(wikidb, 'getInterwikiMap'):
+            interwikimap = wikidb.getInterwikiMap(title, revision=revision)
     else:
         input = raw
     
     tokens = scanner.tokenize(input, title)
 
-    a = parser.Parser(tokens, title, lang=lang).parse()
+    a = parser.Parser(tokens, title, lang=lang, interwikimap=interwikimap).parse()
     a.caption = title
     for x in postprocessors:
-        x(a)
+        x(a, title=title, revision=revision, wikidb=wikidb, lang=lang)
+    
     return a
 
 

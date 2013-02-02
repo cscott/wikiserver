@@ -17,7 +17,7 @@ import urlparse
 
 import simplejson
 
-from mwlib import uparser, utils, metabook
+from mwlib import utils, metabook, wikidbbase
 from mwlib.log import Log
 
 log = Log("mwapidb")
@@ -43,19 +43,31 @@ def get_api_helper(url):
     @rtype: @{APIHelper}
     """
     
-    mo = articleurl_rex.match(url)
-    if mo is None:
+    try:
+        scheme, netloc, path, params, query, fragment = urlparse.urlparse(url)
+    except ValueError:
+        return None
+    if not (scheme and netloc):
         return None
     
-    scheme_host_port = mo.group('scheme_host_port')
-    if scheme_host_port in api_helper_cache:
-        return api_helper_cache[scheme_host_port]
+    if '/wiki/' in path:
+        path_prefix = path[:path.find('/wiki/')]
+    elif '/w/' in path:
+        path_prefix = path[:path.find('/w/')]
+    else:
+        path_prefix = ''
     
+    prefix = '%s://%s%s' % (scheme, netloc, path_prefix)
+    try:
+        return api_helper_cache[prefix]
+    except KeyError:
+        pass
+
     for path in ('/w/', '/wiki/', '/'):
-        base_url = scheme_host_port + path
+        base_url = '%s%s' % (prefix, path)
         api_helper = APIHelper(base_url)
         if api_helper.is_usable():
-            api_helper_cache[scheme_host_port] = api_helper
+            api_helper_cache[prefix] = api_helper
             return api_helper
     
     return None
@@ -82,6 +94,7 @@ def parse_article_url(url, title_encoding='utf-8'):
         return None
     args = cgi.parse_qs(query)
     
+    # example: http://some.host/bla/index.php?title=Article_title&oldid=1234
     if path.endswith('index.php'):
         if 'title' not in args or not args['title']:
             return None
@@ -104,13 +117,18 @@ def parse_article_url(url, title_encoding='utf-8'):
     api_helper = get_api_helper(url)
     if api_helper is None:
         return None
-    
-    if '/wiki/' in path:
-        return {
-            'api_helper': api_helper,
-            'title': unicode(path[path.find('/wiki/') + len('/wiki/'):], title_encoding, 'ignore').replace('_', ' '),
-            'revision': None,
-        }
+
+    for part in ('/wiki/', 'index.php/'):
+        if part in path:
+            return {
+                'api_helper': api_helper,
+                'title': unicode(
+                    path[path.find(part) + len(part):],
+                    title_encoding,
+                    'ignore'
+                ).replace('_', ' '),
+                'revision': None,
+            }
     
     return {
         'api_helper': api_helper,
@@ -147,20 +165,39 @@ class APIHelper(object):
             return True
         return False
     
-    def login(self, username, password):
+    def login(self, username, password, domain=None):
         """Login via MediaWiki API
         
+        @param username: username
         @type username: unicode
         
+        @param password: password
         @type password: unicode
+        
+        @param domain: optional domain
+        @type domain: unicode
+        
+        @returns: True if login succeeded, False otherwise
+        @rtype: bool
         """
         
-        post_data = urllib.urlencode({
+        args = {
             'action': 'login',
             'lgname': username.encode('utf-8'),
             'lgpassword': password.encode('utf-8'),
-        })
-        self.opener.open('%sapi.php' % self.base_url, post_data)
+            'format': 'json',
+        }
+        if domain is not None:
+            args['lgdomain'] = domain.encode('utf-8')
+        result = utils.fetch_url('%sapi.php' % self.base_url,
+            post_data=args,
+            ignore_errors=False,
+            opener=self.opener,
+        )
+        result = simplejson.loads(result)
+        if 'login' in result and result['login'].get('result') == 'Success':
+            return True
+        return False
     
     def query(self, ignore_errors=True, **kwargs):
         args = {
@@ -178,13 +215,17 @@ class APIHelper(object):
             ignore_errors=ignore_errors,
             opener=self.opener,
         )
+        
         if ignore_errors and data is None:
+            log.error('Got no data from api.php')
             return None
         try:
             return simplejson.loads(unicode(data, 'utf-8'))['query']
         except KeyError:
+            log.error('Response from api.php did not contain a query result')
             return None
-        except:
+        except Exception, e:
+            log.error('Got exception: %r' % e)
             if ignore_errors:
                 return None
             raise RuntimeError('api.php query failed. Are you sure you specified the correct baseurl?')
@@ -209,10 +250,25 @@ class APIHelper(object):
 
 
 class ImageDB(object):
-    def __init__(self, base_url=None, username=None, password=None, api_helper=None):
+    def __init__(self,
+        base_url=None,
+        username=None,
+        password=None,
+        domain=None,
+        api_helper=None,
+    ):
         """
         @param base_url: base URL of a MediaWiki, e.g. 'http://en.wikipedia.org/w/'
         @type base_url: basestring
+        
+        @param username: username to login with (optional)
+        @type username: unicode
+        
+        @param password: password to login with (optional)
+        @type password: unicode
+        
+        @param domain: domain to login with (optional)
+        @type domain: unicode
         
         @param api_helper: APIHelper instance
         @type api_helper: L{APIHelper}
@@ -223,18 +279,19 @@ class ImageDB(object):
             self.api_helper = api_helper
         else:
             self.api_helper = APIHelper(base_url)
-            assert self.api_helper.is_usable(), 'invalid base URL %r' % base_url
         
         if username is not None:
-            self.login(username, password)
+            assert self.login(username, password, domain=domain), 'Login failed'
+                
+        assert self.api_helper.is_usable(), 'invalid base URL %r' % base_url
         
         self.tmpdir = tempfile.mkdtemp()
     
     def clear(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
     
-    def login(self, username, password):
-        self.api_helper.login(username, password)
+    def login(self, username, password, domain=None):
+        return self.api_helper.login(username, password, domain=domain)
     
     def getDescriptionURL(self, name):
         """Return URL of image description page for image with given name
@@ -380,7 +437,7 @@ class ImageDB(object):
 # ==============================================================================
 
     
-class WikiDB(object):
+class WikiDB(wikidbbase.WikiDBBase):
     print_template = u'Template:Print%s' # set this to none to deacticate # FIXME
     
     ip_rex = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
@@ -390,6 +447,7 @@ class WikiDB(object):
         base_url=None,
         username=None,
         password=None,
+        domain=None,
         template_blacklist=None,
         api_helper=None,
     ):
@@ -397,6 +455,15 @@ class WikiDB(object):
         @param base_url: base URL of a MediaWiki,
             e.g. 'http://en.wikipedia.org/w/'
         @type base_url: basestring
+        
+        @param username: username to login with (optional)
+        @type username: unicode
+        
+        @param password: password to login with (optional)
+        @type password: unicode
+        
+        @param domain: domain to login with (optional)
+        @type domain: unicode
         
         @param template_blacklist: title of an article containing blacklisted
             templates (optional)
@@ -411,9 +478,12 @@ class WikiDB(object):
             self.api_helper = api_helper
         else:
             self.api_helper = APIHelper(base_url)
-            assert self.api_helper is not None, 'invalid base URL %r' % base_url
+        
         if username is not None:
-            self.login(username, password)
+            assert self.login(username, password, domain=domain), 'login failed'
+        
+        assert self.api_helper.is_usable(), 'invalid base URL %r' % base_url
+
         self.template_cache = {}
         self.template_blacklist = []
         if template_blacklist is not None:
@@ -423,20 +493,26 @@ class WikiDB(object):
     def setTemplateBlacklist(self, template_blacklist):
         raw = self.getRawArticle(template_blacklist)
         if raw is None:
-            log.error('Could not get template blacklist article %r' % template_blacklist)
+            log.error('Could not get template blacklist article %r' % (
+                template_blacklist,
+            ))
         else:
-            self.template_blacklist = [template.lower().strip() 
-                                       for template in re.findall('\* *\[\[.*?:(.*?)\]\]', raw)]
+            self.template_blacklist = [
+                template.lower().strip() 
+                for template in re.findall('\* *\[\[.*?:(.*?)\]\]', raw)
+            ]
     
-    def login(self, username, password):
-        self.api_helper.login(username, password)
+    def login(self, username, password, domain=None):
+        return self.api_helper.login(username, password, domain=domain)
     
     def getURL(self, title, revision=None):
-        name = urllib.quote(title.replace(" ", "_").encode('utf-8'))
+        name = urllib.quote(title.replace(" ", "_").encode('utf-8'), safe=':/@')
         if revision is None:
             return '%sindex.php?title=%s' % (self.api_helper.base_url, name)
         else:
-            return '%sindex.php?title=%s&oldid=%s' % (self.api_helper.base_url, name, revision)
+            return '%sindex.php?title=%s&oldid=%s' % (
+                self.api_helper.base_url, name, revision,
+            )
     
     def getAuthors(self, title, revision=None, max_num_authors=10):
         """Return at most max_num_authors names of non-bot, non-anon users for
@@ -519,9 +595,18 @@ class WikiDB(object):
             return None
 
         if revision is None:
-            page = self.api_helper.page_query(titles=title, redirects=1, prop='revisions', rvprop='content')
+            page = self.api_helper.page_query(
+                titles=title,
+                redirects=1,
+                prop='revisions',
+                rvprop='content',
+            )
         else:
-            page = self.api_helper.page_query(revids=revision, prop='revisions', rvprop='content')
+            page = self.api_helper.page_query(
+                revids=revision,
+                prop='revisions',
+                rvprop='content',
+            )
             if page['title'] != title: # given revision could point to another article!
                 return None
         if page is None:
@@ -531,10 +616,19 @@ class WikiDB(object):
         except KeyError:
             return None
     
-    def getSource(self):
+    def getSource(self, title, revision=None):
+        """Return source for given article title and revision. For this WikiDB,
+        the paramaters are not used.
+        
+        @returns: source dict
+        @rtype: dict
+        """
+        
         if self.source is not None:
             return self.source
         result = self.api_helper.query(meta='siteinfo')
+        if result is None:
+            return None
         try:
             g = result['general']
             self.source = metabook.make_source(
@@ -542,9 +636,36 @@ class WikiDB(object):
                 name='%s (%s)' % (g['sitename'], g['lang']),
                 language=g['lang'],
             )
+            if self.interwikimap is None:
+                self.getInterwikiMap(title, revision=revision)
+            if self.interwikimap:
+                self.source['interwikimap'] = self.interwikimap
             return self.source
         except KeyError:
             return None
+    
+    def getInterwikiMap(self, title, revision=None):
+        """Return interwiki map for article with given title and revision
+        (the parameters are not used with this WikiDB).
+        Fetch it via MediaWiki API if needed.
+        
+        @returns: interwikimap, i.e. dict mapping prefixes to interwiki data
+        @rtype: dict
+        """
+        
+        if self.interwikimap is not None:
+            return self.interwikimap
+        result = self.api_helper.query(
+            meta='siteinfo',
+            siprop='interwikimap',
+        ).get('interwikimap', [])
+        if not result:
+            return
+        self.interwikimap = {}
+        for entry in result:
+            interwiki = metabook.make_interwiki(api_entry=entry)
+            self.interwikimap[interwiki['prefix']] = interwiki
+        return self.interwikimap
     
     def getParsedArticle(self, title, revision=None):
         raw = self.getRawArticle(title, revision=revision)

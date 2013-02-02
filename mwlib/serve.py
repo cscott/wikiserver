@@ -26,8 +26,12 @@ log = log.Log('mwlib.serve')
 def no_job_queue(job_type, collection_id, args):
     """Just spawn a new process for the given job"""
     
+    if os.name == 'nt':
+        kwargs = {}
+    else:
+        kwargs = {'close_fds': True}
     try:
-        subprocess.Popen(args, close_fds=True)
+        subprocess.Popen(args, **kwargs)
     except OSError, exc:
         raise RuntimeError('Could not execute command %r: %s' % (
             args[0], exc,
@@ -161,19 +165,21 @@ class Application(wsgi.Application):
             return response
         pid_path = self.get_path(collection_id, self.pid_filename, writer)
         
+        status_path = self.get_path(collection_id, self.status_filename, writer)
+        if os.path.exists(status_path):
+            log.info('status file exists %r' % status_path)
+            return response
+        
+        error_path = self.get_path(collection_id, self.error_filename, writer)
+        if os.path.exists(error_path):
+            log.info('error file exists %r' % error_path)
+            return response
+        
         args = [
             self.mwrender_cmd,
             '--logfile', self.mwrender_logfile,
-            '--error-file', self.get_path(
-                collection_id,
-                self.error_filename,
-                writer,
-            ),
-            '--status-file', self.get_path(
-                collection_id,
-                self.status_filename,
-                writer,
-            ),
+            '--error-file', error_path,
+            '--status-file', status_path,
             '--writer', writer,
             '--output', output_path,
             '--pid-file', pid_path,

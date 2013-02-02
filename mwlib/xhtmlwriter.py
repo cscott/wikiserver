@@ -35,7 +35,6 @@ except:
     from elementtree import ElementTree as ET
 
 from mwlib import parser
-from mwlib import mathml
 from mwlib import advtree
 from mwlib import xmltreecleaner
 from mwlib.log import Log
@@ -98,7 +97,6 @@ def xserializeVList(vlist):
             for (_key,_value) in value.items():
                 styleArgs.append("%s:%s" % (_key, _value))
             args.append(("style", '%s' % '; '.join(styleArgs)))
-
     return args
 
 def escapeattr(val):
@@ -395,8 +393,7 @@ class MWXHTMLWriter(object):
 
 
     def xwriteMath(self, obj):
-        return mathml.latex2mathml(obj.caption) or self.xwriteMath_WITH_OBJECT(obj)
-        
+        return writerbase.renderMath(obj.caption, output_mode='mathml', render_engine='blahtexml')
 
     def xwriteMath_WITH_OBJECT(self, obj): 
         """
@@ -408,7 +405,7 @@ class MWXHTMLWriter(object):
         s.set("class", "mwx.math")
         s.set("type", "application/x-latex")
         s.set("src", "data:text/plain;charset=utf-8,%s" % obj.caption)
-        r = mathml.latex2mathml(obj.caption)       
+        r = writerbase.renderMath(obj.caption, output_mode='mathml', render_engine='blahtexml')
         if not r:
             #r = ET.Element("em")
             #r.set("class", "math.error")
@@ -423,10 +420,8 @@ class MWXHTMLWriter(object):
 
 
     def xwriteLink(self, obj): # FIXME (known|unknown)
-        a = ET.Element("a")
-        if obj.target:
-            a.set("href", obj.target)
-            a.set("class", "mwx.link.article")
+        a = ET.Element("a", href=obj.url or "#")
+        a.set("class", "mwx.link.article")
         if not obj.children:
             a.text = obj.target
         return a
@@ -452,7 +447,7 @@ class MWXHTMLWriter(object):
 
 
     def xwriteSpecialLink(self, obj): # whats that?
-        a = ET.Element("a", href=obj.target)
+        a = ET.Element("a", href=obj.url or "#")
         a.set("class", "mwx.link.special")
         if not obj.children:
             a.text = obj.target
@@ -724,7 +719,11 @@ def validate(xml):
     fh, tfn = tempfile.mkstemp()
     open(tfn, "w").write(xml)
     cmd = "xmllint --noout --valid %s" %tfn
-    p =subprocess.Popen(cmd, shell=True,stderr=subprocess.PIPE, close_fds=True)
+    if os.name == 'nt':
+        kwargs = {}
+    else:
+        kwargs = {'close_fds': True}
+    p = subprocess.Popen(cmd, shell=True, stderr=subprocess.PIPE, **kwargs)
     p.wait()
     r = p.stderr.read()
     os.remove(tfn)

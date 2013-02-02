@@ -24,7 +24,7 @@ class RecordDB(object):
     results for later retrieval.
     """
     
-    def __init__(self, db, articles, templates):
+    def __init__(self, db, articles, templates, sources):
         """
         @param db: WikiDB to use
         
@@ -33,13 +33,17 @@ class RecordDB(object):
         
         @param templates: dictionary to store template data
         @type templates: dict
+        
+        @param sources: dictionary to store source data
+        @type sources: dict
         """
         
         assert db is not None, "db must not be None"
         self.db = db
         self.articles = articles
         self.templates = templates
-        
+        self.sources = sources
+    
     def getRawArticle(self, name, revision=None):
         r = self.db.getRawArticle(name, revision=revision)
         if r is None:
@@ -52,9 +56,11 @@ class RecordDB(object):
             'authors': self.db.getAuthors(name, revision=revision),
         }
         if hasattr(self.db, 'getSource'):
-            src  = self.db.getSource()
-            if src:
-                self.articles[name]['source'] = src
+            src  = self.db.getSource(name, revision=revision)
+            if src and 'url' in src:
+                self.articles[name]['source-url'] = src['url']
+                if src['url'] not in self.sources:
+                    self.sources[src['url']] = src
         return r
     
     def getTemplate(self, name, followRedirects=False):
@@ -102,6 +108,7 @@ class ZipfileCreator(object):
         self.imagesize = imagesize
         self.articles = {}
         self.templates = {}
+        self.sources = {}
         self.images = {}
         self.zf_lock = threading.RLock()
         if num_article_threads > 0:
@@ -153,7 +160,7 @@ class ZipfileCreator(object):
         self.articles[title] = {}
         
         def add_article_job(title):
-            recorddb = RecordDB(wikidb, self.articles, self.templates)
+            recorddb = RecordDB(wikidb, self.articles, self.templates, self.sources)
             raw = recorddb.getRawArticle(title, revision=revision)
             if raw is None:
                 log.warn('Could not get article %r' % title)
@@ -195,7 +202,7 @@ class ZipfileCreator(object):
         @param imagedb: ImageDB to use (optional)
         """
         
-        recorddb = RecordDB(wikidb, self.articles, self.templates)
+        recorddb = RecordDB(wikidb, self.articles, self.templates, self.sources)
         parse_tree = uparser.parseString(title,
             revision=revision,
             raw=raw,
@@ -256,6 +263,7 @@ class ZipfileCreator(object):
         self.addObject('content.json', simplejson.dumps(dict(
             articles=self.articles,
             templates=self.templates,
+            sources=self.sources,
             images=self.images,
         )))
     
@@ -277,7 +285,9 @@ def make_zip_file(output, env,
         fd, output = tempfile.mkstemp(suffix='.zip')
         os.close(fd)
     
-    zf = zipfile.ZipFile(output + '.tmp', 'w')
+    fd, tmpzip = tempfile.mkstemp(suffix='.zip', dir=os.path.dirname(output))
+    os.close(fd)
+    zf = zipfile.ZipFile(tmpzip, 'w')
     
     z = ZipfileCreator(zf,
         imagesize=imagesize,
@@ -323,14 +333,13 @@ def make_zip_file(output, env,
             imagedb=env.images,
         )
     
-    if 'source' not in env.metabook:
-        env.metabook['source'] = env.get_source()
-    
     z.addObject('metabook.json', simplejson.dumps(env.metabook))
     
     z.writeContent()
     zf.close()
-    os.rename(output + '.tmp', output)
+    if os.path.exists(output):
+        os.unlink(output)
+    os.rename(tmpzip, output)
     
     if env.images and hasattr(env.images, 'clear'):
         env.images.clear()

@@ -45,6 +45,7 @@ from mwlib import odfstyles as style
 from mwlib import xmltreecleaner
 from mwlib import writerbase
 
+
 log = Log("odfwriter")
 
 def showNode(obj):
@@ -268,12 +269,18 @@ class ODFWriter(object):
 
 
     def owriteSection(self, obj):
+        hXstyles = (style.h1,style.h2,style.h3,style.h4,style.h5,style.h6)
+
+        # skip empty sections (as for eg References)
+        if not u"".join(x.getAllDisplayText().strip() for x in obj.children[1:]):
+            return SkipChildren()
+        
+        title = obj.children[0].getAllDisplayText()
         level = 1 + obj.getSectionLevel() # H1 is for an article, starting with h2
-        #title = u"%d %s" %(level,  obj.children[0].children[0].caption ) # FIXME (debug output)
-        title = obj.children[0].children[0].caption
+        level = min(level, len(hXstyles))
         r = text.Section(stylename=style.sect, name=title) 
-        hXstyle = (style.h1,style.h2,style.h3,style.h4,style.h5,style.h6)[level-1]
-        r.addElement(text.H(outlinelevel=level, stylename=hXstyle, text=title))
+        hX = hXstyles[level-1] 
+        r.addElement(text.H(outlinelevel=level, stylename=hX, text=title))
         obj.children = obj.children[1:]
         return r
 
@@ -324,12 +331,12 @@ class ODFWriter(object):
     def owriteRow(self, row): # COLSPAN FIXME
         tr = table.TableRow()
         for c in row.children:
-            cs =  c.vlist.get("colspan", 0)
+            cs =  c.colspan
             self.write(c,tr)
             if cs:
                 tr.elements[-1].addAttribute("numbercolumnsspanned",str(cs))
-            for i in range(cs):
-                tr.addElement(table.CoveredTableCell())
+                for i in range(cs):
+                    tr.addElement(table.CoveredTableCell())
         return SkipChildren(tr)
 
     def owriteTable(self, obj): # FIXME ADD FORMATTING
@@ -471,7 +478,9 @@ class ODFWriter(object):
         get a MATHML from Latex
         translate element tree to odf.Elements
         """
-        r = mathml.latex2mathml(obj.caption)     # returns an element tree parse tree
+        r = writerbase.renderMath(obj.caption, output_mode='mathml', render_engine='blahtexml')        
+        if not r:
+            return
         #print mathml.ET.tostring(r)
         def _withETElement(e, parent):
             # translate to odf.Elements
@@ -507,14 +516,7 @@ class ODFWriter(object):
 
 
     def owriteLink(self, obj): 
-        href = getattr(obj, 'full_target', "") or obj.target or ""
-        if self.env and self.env.wiki:
-            art = obj.getParentNodesByClass(advtree.Article)[0]
-            baseurl =  self.env.wiki.getURL(art.caption)
-            if baseurl is not None:
-                href = baseurl.rsplit("/",1)[0] + "/index.php?title=" + self._quoteURL(href) 
-
-        a = text.A(href=href)
+        a = text.A(href= obj.url or "#")
         if not obj.children:
             a.addText(obj.target)
         return a
@@ -561,30 +563,41 @@ class ODFWriter(object):
 
     def owriteLangLink(self, obj):
         return SkipChildren() # we dont want them
-    
 
 
     def owriteReference(self, t): 
         self.references.append(t)
-        s =  text.Span(stylename=style.sup)
-        s.addText(u"[%d]" %  len(self.references))
-        return SkipChildren(s)
-
-
-    def writeReferenceList(self, t):
-        pass
+        n =  text.Note(noteclass="footnote")
+        nc = text.NoteCitation()
+        n.addElement(nc )
+        nc.addText(str(len(self.references)))
+        nb = text.NoteBody()
+        n.addElement( nb )
+        p = ParagraphProxy(stylename="Footnote")
+        nb.addElement(p)
+        n.writeto = p
+        return n
 
     def owriteReferenceList(self, t):
-        if not self.references:
-            return
-        ol =  text.List(stylename=style.numberedlist)
-        for i,ref in enumerate(self.references):
-            li = self.owriteItem(None)
-            ol.addElement(li)
-            self.writeChildren(ref, parent=li)
-        self.references = []
-        return SkipChildren(ol) # shall not have any children??
-       
+        pass
+
+#     def owriteReferenceOLD(self, t): 
+#         self.references.append(t)
+#         s =  text.Span(stylename=style.sup)
+#         s.addText(u"[%d]" %  len(self.references))
+#         return SkipChildren(s)
+
+
+#     def owriteReferenceListOLD(self, t):
+#         if not self.references:
+#             return
+#         ol =  text.List(stylename=style.numberedlist)
+#         for i,ref in enumerate(self.references):
+#             li = self.owriteItem(None)
+#             ol.addElement(li)
+#             self.writeChildren(ref, parent=li)
+#         self.references = []
+#         return SkipChildren(ol) # shall not have any children??
 
     def owriteImageMap(self, obj):
         pass # write children # fixme

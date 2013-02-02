@@ -9,8 +9,7 @@ import re
 
 from mwlib.scanner import tokenize, TagToken, EndTagToken
 from mwlib.log import Log
-from mwlib.namespace import namespace_maps, interwiki_map
-from mwlib.lang import languages
+from mwlib import namespace
 
 log = Log("parser")
 
@@ -33,10 +32,10 @@ class TokenSet(object):
         return x in self.values or type(x) in self.types
         
 FirstAtom = TokenSet(['TEXT', 'URL', 'SPECIAL', '[[', 'MATH', '\n',
-                      'BEGINTABLE', 'STYLE', 'TIMELINE', 'ITEM', 'URLLINK',
+                      'BEGINTABLE', 'SINGLEQUOTE', 'TIMELINE', 'ITEM', 'URLLINK',
                       TagToken])
 
-FirstParagraph = TokenSet(['SPECIAL', 'URL', 'TEXT', 'TIMELINE', '[[', 'STYLE', 'BEGINTABLE', 'ITEM',
+FirstParagraph = TokenSet(['SPECIAL', 'URL', 'TEXT', 'TIMELINE', '[[', 'SINGLEQUOTE', 'BEGINTABLE', 'ITEM',
                            'PRE', 'MATH', '\n', 'PRE', 'EOLSTYLE', 'URLLINK',
                            TagToken])
 
@@ -198,8 +197,6 @@ class Caption(_VListNode):
 
 class Link(Node):
     target = None
-    from mwlib.namespace import NS_MAIN, NS_CATEGORY, NS_FILE
-
     colon = False
 
     def hasContent(self):
@@ -208,18 +205,18 @@ class Link(Node):
         return False
 
     @classmethod
-    def _buildSpecializeMap(cls, namespaces, interwikis, langs):
-        """
-        Returns a dict mapping namespace prefixes to a tuple of form
+    def _buildSpecializeMap(cls, namespaces, interwikimap):
+        """Return a dict mapping namespace prefixes to a tuple of form
         (link_class, namespace_value).
         """
+        
         res = {}
 
         def reg(name, num):
             name = name.lower()
-            if num == cls.NS_CATEGORY:
+            if num == namespace.NS_CATEGORY:
                 res[name] = (CategoryLink, num)
-            elif num == cls.NS_FILE:
+            elif num == namespace.NS_FILE:
                 res[name] = (ImageLink, num)
             else:
                 res[name] = (NamespaceLink, num)
@@ -231,19 +228,28 @@ class Link(Node):
                 for n in name:
                     reg(n, num)
 
-        for name, target in interwikis.iteritems():
-            res[name.lower()] = (InterwikiLink, target)
+        for prefix, d in interwikimap.items():
+            if 'language' in interwikimap[prefix]:
+                res[prefix] = (LangLink, prefix)
+            else:
+                res[prefix] = (InterwikiLink, d.get('renamed', prefix))
         
-        for lang in langs:
-            res[lang.lower()] = (LangLink, lang)
-
         return res
-        
+    
     @classmethod
-    def _setSpecializeMap(cls, nsMap='default'):
+    def _setSpecializeMap(cls, nsMap='default', interwikimap=None):
+        if interwikimap is None:
+            from mwlib.lang import languages
+            interwikimap = {}
+            for prefix, renamed in namespace.dummy_interwikimap.items():
+                interwikimap[prefix] = {'renamed': renamed}
+            for lang in languages:
+                interwikimap[lang] = {'language': True}
+        
         cls._specializeMap = cls._buildSpecializeMap(
-            namespace_maps[nsMap], interwiki_map, languages)
-
+            namespace.namespace_maps[nsMap], interwikimap,
+        )
+    
     def _specialize(self):
         """
         Handles different forms of link, e.g.:
@@ -274,24 +280,21 @@ class Link(Node):
         try:
             ns, title = full_target.split(':', 1)
         except ValueError:
-            self.namespace = self.NS_MAIN
+            self.namespace = namespace.NS_MAIN
             self.target = full_target
             self.__class__ = ArticleLink
             return
 
-        (self.__class__, self.namespace) = (
-                self._specializeMap.get(ns.lower(), (ArticleLink, self.NS_MAIN)))
+        self.__class__, self.namespace = self._specializeMap.get(
+            ns.lower(),
+            (ArticleLink, namespace.NS_MAIN),
+        )
         
-        if len(ns) == 2 and not isinstance(self, InterwikiLink):
-            # Assume this is an unlisted language
-            self.__class__ = LangLink
-            self.namespace = ns.lower()
-
-        if self.colon and self.namespace != self.NS_MAIN:
+        if self.colon and self.namespace != namespace.NS_MAIN:
             # [[:Category:Foo]] should not be a category link
             self.__class__ = NamespaceLink
 
-        if self.namespace == self.NS_MAIN:
+        if self.namespace == namespace.NS_MAIN:
             # e.g. [[Blah: Foo]] is an ordinary article with a colon
             self.target = full_target
         else:
@@ -445,22 +448,25 @@ class Text(Node):
 class Control(Text):
     pass
 
-def _parseAtomFromString(s, lang=None):
+def _parseAtomFromString(s, lang=None, interwikimap=None):
     from mwlib import scanner
     tokens = scanner.tokenize(s)
-    p=Parser(tokens, lang=lang)
+    p=Parser(tokens, lang=lang, interwikimap=interwikimap)
     try:
         return p.parseAtom()
     except Exception, err:
         log.error("exception while parsing %r: %r" % (s, err))
         return None
 
-                  
+
     
-def parse_fields_in_imagemap(imap, lang=None):
+def parse_fields_in_imagemap(imap, lang=None, interwikimap=None):
     
     if imap.image:
-        imap.imagelink = _parseAtomFromString(u'[['+imap.image+']]', lang=lang)
+        imap.imagelink = _parseAtomFromString(u'[['+imap.image+']]',
+            lang=lang,
+            interwikimap=interwikimap,
+        )
         if not isinstance(imap.imagelink, ImageLink):
             imap.imagelink = None
 
@@ -477,9 +483,10 @@ def append_br_tag(node):
 _ALPHA_RE = re.compile(r'[^\W\d_]+', re.UNICODE) # Matches alpha strings
             
 class Parser(object):
-    def __init__(self, tokens, name='', lang=None):
+    def __init__(self, tokens, name='', lang=None, interwikimap=None):
         self.tokens = tokens
         self.lang = lang
+        self.interwikimap = interwikimap
         self.pos = 0
         self.name = name
         self.lastpos = 0
@@ -487,11 +494,11 @@ class Parser(object):
         
         if lang:
             nsMap = '%s+en_mw' % lang
-            if nsMap not in namespace_maps:
+            if nsMap not in namespace.namespace_maps:
                 nsMap = 'default'
         else:
             nsMap = 'default'
-        Link._setSpecializeMap(nsMap)
+        Link._setSpecializeMap(nsMap, interwikimap)
         
         from mwlib import tagext
         self.tagextensions = tagext.default_registry
@@ -544,8 +551,8 @@ class Parser(object):
             return Text(token[1])
         elif token[0]=='BEGINTABLE':
             return self.parseTable()
-        elif token[0]=='STYLE':
-            return self.parseStyle()
+        elif token[0]=='SINGLEQUOTE':
+            return self.parseSingleQuote()
         elif token[0]=='TIMELINE':
             return self.parseTimeline()
         elif token[0]=='ITEM':
@@ -762,7 +769,10 @@ class Parser(object):
 
             # either image link or text inside
             # FIXME: Styles and links in text are ignored!
-            n=_parseAtomFromString(u'[['+x+']]', lang=self.lang)
+            n=_parseAtomFromString(u'[['+x+']]',
+                lang=self.lang,
+                interwikimap=self.interwikimap,
+            )
 
             if isinstance(n, ImageLink):
                 children.append(n)
@@ -792,7 +802,10 @@ class Parser(object):
         else:
             node.imagemap.image = None
 
-        parse_fields_in_imagemap(node.imagemap)
+        parse_fields_in_imagemap(node.imagemap,
+            lang=self.lang,
+            interwikimap=self.interwikimap,
+        )
 
         #print node.imagemap
         return node
@@ -816,8 +829,8 @@ class Parser(object):
                 break
             elif token[0] == '[[':
                 title.append(self.parseLink())
-            elif token[0] == "STYLE":
-                title.append(self.parseStyle())
+            elif token[0] == "SINGLEQUOTE":
+                title.append(self.parseSingleQuote())
             elif token[0] == 'TEXT':
                 self.next()
                 title.append(Text(token[1]))
@@ -863,52 +876,93 @@ class Parser(object):
                 
         return s
 
-    def parseStyle(self):
-        end = self.token[1]
-        b = Style(self.token[1])
-        self.next()
-
-        break_at = TokenSet(['BREAK', '\n', 'ENDEOLSTYLE', 'SECTION', 'ENDSECTION',
-                             'BEGINTABLE', ']]', 'ROW', 'COLUMN', 'ENDTABLE', EndTagToken])
+    def parseSingleQuote(self):
+        def count_consecutives():
+            count = 0
+            while self.left:
+                token = self.token
+                if token[0] != 'SINGLEQUOTE':
+                    break
+                count += 1
+                self.next()
+            return count
+        
+        inner_style, outer_style = None, None
+        count = count_consecutives()
+        
+        if count == 1:
+            return Text("'")
+        
+        end_count = 0
+        if count >= 3:
+            outer_style = inner_style = Style("'''")
+            end_count += 3
+            count -= 3
+        if count >= 2:
+            if inner_style is None:
+                outer_style = inner_style = Style("''")
+            else:
+                outer_style = inner_style
+                inner_style = Style("''")
+                outer_style.append(inner_style)
+            end_count += 2
+            count -= 2
+        
+        if count > 0:
+            inner_style.append(Text("'"*count))
+        
+        break_at = TokenSet([
+            'BREAK', '\n', 'ENDEOLSTYLE', 'SECTION', 'ENDSECTION',
+            'BEGINTABLE', ']]', 'ROW', 'COLUMN', 'ENDTABLE', EndTagToken,
+        ])
         
         while self.left:
             token = self.token
-            if token[0]=="STYLE":
-                if token[1]==end:
-                    self.next()
+            if token[0] == 'SINGLEQUOTE':
+                count = count_consecutives()
+                if count >= end_count:
+                    self.pos -= count - end_count
                     break
-                else:
-                    new = token[1]
-                    if end=="'''''":
-                        if token[1]=="''":
-                            new = "'''"
-                        else:
-                            new = "''"
-                    elif end=="''":
-                        if token[1]=="'''":
-                            new = "'''''"
-                        elif token[1]=="'''''":
-                            new = "'''"
-                    elif end=="'''":
-                        if token[1]=="''":
-                            new = "'''''"
-                        elif token[1]=="'''''":
-                            new = "''"
-                        
-                    self.tokens[self.pos] = ("STYLE", new)
-                    break
+                
+                if count == 1:
+                    inner_style.append(Text("'"))
+                    continue
+                
+                if count >= 3:
+                    count -= 3
+                    assert inner_style is not outer_style, 'sanity check'
+                    # swap styles
+                    outer_style.caption = "''"
+                    inner_style.caption = "'''"
+                    inner_style = outer_style
+                    end_count = 2
+                
+                if count >= 2:
+                    count -= 2
+                    if inner_style is not outer_style:
+                        inner_style = outer_style
+                        end_count = 3
+                    else:
+                        # must be the case inner_style = outer_style = Style("'''")
+                        outer_style.caption = "''"
+                        self.pos -= 1
+                        break
+                
+                if count > 0:
+                    assert count == 1, 'sanity check'
+                    inner_style.append(Text("'"))
+            
             elif token[0] in break_at:
                 break
             elif token[0] in FirstAtom:
-                b.append(self.parseAtom())
+                inner_style.append(self.parseAtom())
             else:
                 log.info("assuming text in parseStyle", token)
-                b.append(Text(token[1]))
+                inner_style.append(Text(token[1]))
                 self.next()
-
-        return b
+        
+        return outer_style
     
-
     def parseColumn(self):
         token = self.token
         c = Cell()
@@ -1035,8 +1089,8 @@ class Parser(object):
                 if token[1]!='|':
                     n.append(Text(token[1]))
                 self.next()
-            elif token[0] == 'STYLE':
-                n.append(self.parseStyle())
+            elif token[0] == 'SINGLEQUOTE':
+                n.append(self.parseSingleQuote())
             elif isinstance(token[0], TagToken):
                 n.append(self.parseTagToken())
             elif token[0] == '[[':

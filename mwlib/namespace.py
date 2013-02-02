@@ -65,7 +65,7 @@ namespace_maps['default'] = dict(namespace_maps['enwiki'].items() + namespace_ma
 
 # external wikis:
 
-interwiki_map = {
+dummy_interwikimap = {
     'wikipedia': 'wikipedia',
     'w': 'wikipedia',
     'wiktionary': 'wiktionary',
@@ -89,6 +89,6 @@ interwiki_map = {
     'incubator': 'incubator',
     'mw': 'mw',
     'mediazilla': 'mediazilla',
-
+    
     'wikitravel': 'wikitravel',
 }
