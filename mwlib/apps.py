@@ -241,7 +241,6 @@ def render():
     
     options, args = parser.parse_args()
     
-    import simplejson
     import sys
     import tempfile
     import traceback
@@ -476,7 +475,7 @@ def serve():
         default='0.0.0.0',
     )
     parser.add_option('--cache-dir',
-        help='cache directory',
+        help='cache directory (default: /var/cache/mw-serve/)',
         default='/var/cache/mw-serve/',
     )
     parser.add_option('--mwrender',

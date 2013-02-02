@@ -528,6 +528,7 @@ class ImageLink(Link):
     height = None
     align = ''
     thumb = False
+    printargs = None
     
     def isInline(self):
         return not bool(self.align or self.thumb)
@@ -535,7 +536,6 @@ class ImageLink(Link):
     def _readArgs(self):
         idx = 0
         last = []
-        
         while idx<len(self.children):
             x = self.children[idx]
             if x == Control("|"):
@@ -566,7 +566,9 @@ class ImageLink(Link):
                 self.frame = True
                 del self.children[idx]
                 continue
-            
+
+            if x.startswith('print='):
+                self.printargs = x[len('print='):]
 
             if x.endswith('px'):
                 # x200px

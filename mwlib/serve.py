@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import signal
-import simplejson
 import StringIO
 import subprocess
 import time
@@ -15,6 +14,10 @@ try:
     from hashlib import md5
 except ImportError:
     from md5 import md5
+try:
+    import json
+except ImportError:
+    import simplejson as json
 
 from mwlib import filequeue, log, podclient, utils, wsgi, _version
 
@@ -42,7 +45,7 @@ def no_job_queue(job_type, collection_id, args):
 
 # ==============================================================================
 
-collection_id_rex = re.compile(r'^[a-z0-9]+$')
+collection_id_rex = re.compile(r'^[a-z0-9]{16}$')
 
 def make_collection_id(data):
     sio = StringIO.StringIO()
@@ -68,7 +71,7 @@ def json_response(fn):
         if isinstance(result, wsgi.Response):
             return result
         return wsgi.Response(
-            content=simplejson.dumps(result),
+            content=json.dumps(result),
             headers={'Content-Type': 'application/json'},
         )
     return wrapper
@@ -162,10 +165,7 @@ class Application(wsgi.Application):
         collection_dir = self.get_collection_dir(collection_id)
         if not os.path.isdir(collection_dir):
             log.info('Creating new collection dir %r' % collection_dir)
-            try:
-                os.makedirs(collection_dir)
-            except Exception, exc:
-                log.warn('Could not create directory %r: %s' % (collection_dir, exc))
+            os.makedirs(collection_dir)
         return collection_id
     
     def get_path(self, collection_id, filename, ext=None):
@@ -202,6 +202,7 @@ class Application(wsgi.Application):
         response = {
             'collection_id': collection_id,
             'writer': writer,
+            'is_cached': False,
         }
         
         pid_path = self.get_path(collection_id, self.pid_filename, writer)
@@ -294,7 +295,7 @@ class Application(wsgi.Application):
         status_path = self.get_path(collection_id, self.status_filename, writer)
         try:
             f = open(status_path, 'rb')
-            return simplejson.loads(f.read())
+            return json.loads(f.read())
             f.close()
         except (IOError, ValueError):
             return {'progress': 0}
@@ -413,7 +414,7 @@ class Application(wsgi.Application):
         
         pod_api_url = post_data.get('pod_api_url', '')
         if pod_api_url:
-            result = simplejson.loads(urllib2.urlopen(pod_api_url, data="any").read())
+            result = json.loads(urllib2.urlopen(pod_api_url, data="any").read())
             post_url = result['post_url']
             response = {
                 'state': 'ok',
