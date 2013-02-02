@@ -247,7 +247,8 @@ class PagesProcessor(handler.ContentHandler):
             if (title not in self._pages_blacklist) and \
                 (title in self._selected_pages_list):
                 print "%d Page '%s', length %d                   \r" % \
-                        (self._page_counter, title, len(self._page)),
+                        (self._page_counter,
+                         title.encode('ascii', 'replace'), len(self._page)),
                 # processed
                 self._register_page(self._output, title, self._page)
                 self.get_images(title)
@@ -269,7 +270,7 @@ class TemplatesCounter:
             words = line.split()
             page = words[0]
             if page in pages_selected:
-                print "Processing page %s \r" % page,
+                print "Processing page %s \r" % page.encode('ascii', 'replace'),
                 for n in range(1, len(words) - 1):
                     template = words[n]
                     try:
@@ -342,7 +343,7 @@ class TemplatesLoader():
                     #print "checking", template_name,
 
                     if select_all or template_name in templates_used.keys():
-                        #print "Adding", template_name,
+                        #print "Adding Template", template_name.encode('ascii', 'replace'), '\r',
                         title = template_namespace + ":" + template_name
                         self._register_page(title, template_content.strip())
 
