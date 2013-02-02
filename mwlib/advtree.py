@@ -34,10 +34,26 @@ log = Log("advtree")
 
 def _idIndex(lst, el):
     # return first appeareance of element in list
+    match = None
     for i, e in enumerate(lst):
         if e is el:
-            return i
-    return -1
+            assert match is None
+            match = i
+    if match is not None:
+        return match
+    raise ValueError
+
+def debug(method): # use as decorator
+    def f(self, *args, **kargs):
+        log("\n%s called with %r %r" % (method.__name__, args, kargs))
+        log("on %r attrs:%r style:%r" % (self, self.attributes, self.style) )
+        p = self
+        while p.parent:
+            p = p.parent
+            log("%r" % p)
+        return method(self, *args, **kargs)
+    return f
+
 
 class AdvancedNode:
     """
@@ -72,27 +88,29 @@ class AdvancedNode:
             idx+=1
         tp.children = tp.children[:idx] + [self] + tp.children[idx:]
         self._parentref = weakref.ref(tp)
+
+    def hasChild(self, c):
+        try:
+            _idIndex(self.children, c)
+            assert c.parent is self
+            return True
+        except ValueError:
+            return False
         
     def appendChild(self, c):
         self.children.append(c)
         c._parentref = weakref.ref(self)
 
-    def remove(self):
-        if self.parent:
-            for (idx, n) in enumerate(self.parent.children):
-                if n is self:
-                    self.parent.children = self.parent.children[:idx] + self.parent.children[idx+1:]
-                    return 0
-        else:
-            return 1
-            
     def removeChild(self, c):
         self.replaceChild(c, [])
+        assert c.parent is None
 
     def replaceChild(self, c, newchildren = []):
+        assert self.hasChild(c)
         idx = _idIndex(self.children, c)
-        self.children.remove(c)           
+        self.children = self.children[:idx] + self.children[idx+1:]
         c._parentref = None
+        assert not self.hasChild(c)
         if newchildren:
             self.children = self.children[:idx] + newchildren + self.children[idx:]
             for nc in newchildren:
@@ -234,34 +252,26 @@ class AdvancedNode:
             if klasses and self.nav_box_classes.intersection(set(klasses.split())):
                 return True
         return False
-
     
     def getStyle(self):
         if not self.attributes:
             return {}
-        style =  self.attributes.get('style', {})
+        style =  self.attributes.get('style', {}) # THIS IS BROKEN
         return style
-
-    def _fixAttributes(self, attributes):
-        def _safeint(value, default=1):
-            try:
-                value = int(value)
-            except ValueError:
-                value = default
-            return value
-        colspan = attributes.get('colspan')
-        if colspan:
-            attributes['colspan'] = _safeint(colspan)
-        rowspan = attributes.get('rowspan')
-        if rowspan:
-            attributes['rowspan'] = _safeint(rowspan)
-        return attributes
 
     def getAttributes(self):
         attrs = getattr(self, 'vlist', {})
-        attrs = self._fixAttributes(attrs)
+        for n in ("colspan", "rowspan"): # col, row span attributes 
+            v = attrs.get(n)
+            if v is not None:
+                if isinstance(v, (str, unicode)) and v.isdigit():
+                    attrs[n] = int(v)
+                elif not isinstance(v, int):
+                    attrs[n] = 1 # some default
+                attrs[n] = max(attrs[n], 1)
         return attrs
 
+#    @debug
     def isVisible(self):
         if self.style.get('display', '').lower() == 'none':
             return False
@@ -307,17 +317,21 @@ class AdvancedRow(AdvancedNode):
     @property 
     def cells(self):
         return [c for c in self if c.__class__ == Cell]
-    def rowspan(self):
-        c = self.vlist.get("rowspan",0)
-        if isinstance(c,int) and c>0:
-            return int(c)
+
 
 class AdvancedCell(AdvancedNode):
     @property    
-    def colspan(self):
-        c = self.vlist.get("colspan",0)
-        if isinstance(c,int) and c>0:
-            return int(c)
+    def colspan(self, attr="colspan"):
+        # returns None if there is no valid colspan e.g. colspan="one"
+        c = self.vlist.get(attr, None)
+        if c is not None and (isinstance(c,int) or (isinstance(c, (str, unicode)) and c.isdigit())):
+            return max(1,int(c))
+
+    @property
+    def rowspan(self):
+        return self.colspan(attr="rowspan")
+
+
 
 class AdvancedSection(AdvancedNode):
     h_level = 0 # this is set if it originates from an H1, H2, ... TagNode
@@ -619,6 +633,7 @@ def removeNodes(node):
         # first child of section groups heading text - grouping Node must not be removed
         if not (node.previous == None and node.parent.__class__ == Section): 
             node.parent.replaceChild(node, node.children)
+            
     for c in node.children[:]:
         removeNodes(c)
 
@@ -631,7 +646,11 @@ def removeNewlines(node):
             prev = node.previous or node.parent # previous sibling node or parentnode 
             next = node.next or node.parent.next
             if not next or next.isblocknode or not prev or prev.isblocknode: 
+                assert not node.children
+                np = node.parent
                 node.parent.removeChild(node)    
+                assert node.parent is None
+                assert not np.hasChild(node)
         node.caption = node.caption.replace("\n", " ")
       
     for c in node.children[:]:
@@ -644,11 +663,36 @@ def buildAdvancedTree(root): # USE WITH CARE
     do not use this funcs without knowing whether these 
     Node modifications fit your problem
     """
+#    _validateParserTree(root)
     extendClasses(root) 
     fixTagNodes(root)
     removeNodes(root)
     removeNewlines(root)
     fixStyles(root) 
+    _validateParents(root)       
+
+
+def _validateParserTree(node, parent=None):
+    # helper to assert tree parent link consistency
+    if parent is not None:
+        _idIndex(parent.children, node) # asserts it occures only once
+    for c in node:
+        _idIndex(node.children, c) # asserts it occures only once
+        assert c in node.children
+        _validateParserTree(c, node)
+
+
+def _validateParents(node, parent=None):
+    # helper to assert tree parent link consistency
+    if parent is not None:
+        assert parent.hasChild(node)
+    else:
+        assert node.parent is None      
+    for c in node:
+        assert node.hasChild(c)
+        _validateParents(c, node)
+        
+
 
 def getAdvTree(fn):
     from mwlib.dummydb import DummyDB

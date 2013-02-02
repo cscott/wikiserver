@@ -141,6 +141,13 @@ def parse_article_url(url, title_encoding='utf-8'):
 
 
 class APIHelper(object):
+    """
+    @ivar long_request: log a warning if an HTTP requests lasts longer than this
+       time (in seconds)
+    @type lon_request: float or int
+    """
+    long_request = 2
+    
     def __init__(self, base_url):
         """
         @param base_url: base URL (or list of URLs) of a MediaWiki,
@@ -199,7 +206,7 @@ class APIHelper(object):
             return True
         return False
     
-    def query(self, ignore_errors=True, **kwargs):
+    def query(self, ignore_errors=True, num_tries=2, **kwargs):
         args = {
             'action': 'query',
             'format': 'json',
@@ -211,10 +218,21 @@ class APIHelper(object):
         q = urllib.urlencode(args)
         q = q.replace('%3A', ':') # fix for wrong quoting of url for images
         q = q.replace('%7C', '|') # fix for wrong quoting of API queries (relevant for redirects)
-        data = utils.fetch_url('%sapi.php?%s' % (self.base_url, q),
-            ignore_errors=ignore_errors,
-            opener=self.opener,
-        )
+
+        for i in range(num_tries):
+            try:
+                s = time.time()
+                data = utils.fetch_url('%sapi.php?%s' % (self.base_url, q),
+                    ignore_errors=ignore_errors,
+                    opener=self.opener,
+                )
+                elapsed = time.time() - s
+                if elapsed > self.long_request:
+                    log.warn('Long request: HTTP request took %f s' % elapsed)
+            except:
+                if i == num_tries - 1:
+                    raise
+            time.sleep(0.5)
         
         if ignore_errors and data is None:
             log.error('Got no data from api.php')
@@ -230,19 +248,13 @@ class APIHelper(object):
                 return None
             raise RuntimeError('api.php query failed. Are you sure you specified the correct baseurl?')
     
-    def page_query(self, num_tries=2, **kwargs):
-        for i in range(num_tries):
+    def page_query(self, **kwargs):
+        q = self.query(**kwargs)
+        if q is not None:
             try:
-                q = self.query(**kwargs)
-                if q is not None:
-                    try:
-                        return q['pages'].values()[0]
-                    except (KeyError, IndexError):
-                        return None
-            except:
-                if i == num_tries - 1:
-                    raise
-            time.sleep(0.5)
+                return q['pages'].values()[0]
+            except (KeyError, IndexError):
+                return None
         return None
     
 
@@ -286,6 +298,7 @@ class ImageDB(object):
         assert self.api_helper.is_usable(), 'invalid base URL %r' % base_url
         
         self.tmpdir = tempfile.mkdtemp()
+        self.wikidb = None
     
     def clear(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -311,14 +324,21 @@ class ImageDB(object):
         
         try:
             imageinfo = result['imageinfo'][0]
-            url = imageinfo['descriptionurl']
-            if url: # url can be False
+            url = imageinfo.get('descriptionurl')
+            if url: # url can be False (!) or non-existant
                 if url.startswith('/'):
                     url = urlparse.urljoin(self.api_helper.base_url, url)
                 return url
-            return None
+            else:
+                if self.wikidb is None:
+                    self.wikidb = WikiDB(api_helper=self.api_helper)
+                title = 'Image:%s' % name
+                art = self.wikidb.getRawArticle(title)
+                if art is not None:
+                    return self.wikidb.getURL(title)
         except (KeyError, IndexError):
-            return None
+            pass
+        return None
     
     def getURL(self, name, size=None):
         """Return image URL for image with given name
@@ -611,10 +631,20 @@ class WikiDB(wikidbbase.WikiDBBase):
                 return None
         if page is None:
             return None
-        try:
-            return page['revisions'][0].values()[0]
-        except KeyError:
+        revisions = page.get('revisions')
+        if revisions is None:
             return None
+        if isinstance(revisions, list):
+            try:
+                return revisions[0]['*']
+            except (IndexError, KeyError):
+                return None
+        else:
+            # MediaWiki 1.10
+            try:
+                return revisions.values()[0]['*']
+            except (AttributeError, IndexError, KeyError):
+                return None
     
     def getSource(self, title, revision=None):
         """Return source for given article title and revision. For this WikiDB,

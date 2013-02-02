@@ -59,11 +59,13 @@ def scan(text):
 
 def resolve_entity(e):
     if e[1]=='#':
-        if e[2]=='x' or e[2]=='X':
-            return unichr(int(e[3:-1], 16))
-        else:
-            return unichr(int(e[2:-1]))
-
+        try:
+            if e[2]=='x' or e[2]=='X':
+                return unichr(int(e[3:-1], 16))
+            else:
+                return unichr(int(e[2:-1]))
+        except ValueError:
+            return e        
     else:
         try:
             return unichr(htmlentitydefs.name2codepoint[e[1:-1]])
@@ -334,7 +336,7 @@ class TagToken(_BaseTagToken):
         self.text = text
 
     def __repr__(self):
-        return "<Tag:%s %r>" % (self.t, self.text)
+        return "<Tag:%r %r>" % (self.t, self.text)
 
 class EndTagToken(_BaseTagToken):
     def __init__(self, t, text=''):
@@ -342,7 +344,7 @@ class EndTagToken(_BaseTagToken):
         self.text = text
         
     def __repr__(self):
-        return "<EndTag:%s>" % self.t
+        return "<EndTag:%r>" % (self.t,)
 
 def tokenize(input, name="unknown"):
     assert input is not None, "must specify input argument in tokenize"
