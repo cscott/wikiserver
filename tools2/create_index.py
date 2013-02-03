@@ -196,7 +196,7 @@ else:
 
 print 'Compressing .processed file'
 if not os.path.exists('%s.processed.bz2' % input_xml_file_name):
-    cmd = ['bzip2', '-zk', '%s.processed' % input_xml_file_name]
+    cmd = ['bzip2', '-zk3', '%s.processed' % input_xml_file_name]
     p = call(cmd)
     if os.path.exists('%s.processed.bz2t' % input_xml_file_name):
         os.remove('%s.processed.bz2t' % input_xml_file_name)
