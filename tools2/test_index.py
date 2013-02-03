@@ -157,6 +157,16 @@ class DataRetriever():
         finish = False
         while not finish:
             line = p.stdout.readline()
+            if not line:
+                # read next block
+                num_block += 1
+                block_start = self._get_block_start(num_block)
+                if block_start == -1: break
+                bzip_file = open(self._bzip_file_name, mode='r')
+                cmd = ['../bin/%s/seek-bunzip' % config.system_id, str(block_start)]
+                p = Popen(cmd, stdin=bzip_file, stdout=PIPE, stderr=STDOUT,
+                          close_fds=True)
+                continue
             if len(line) == 2:
                 if ord(line[0]) == 3:
                     finish = True
